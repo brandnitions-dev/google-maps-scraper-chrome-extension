@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Google Maps Lead Scraper",
+  "version": "1.0.0",
+  "description": "Scrape Google Maps listings into CSV. Sticky sidebar UI with debug logs.",
+  "permissions": ["storage", "downloads", "scripting", "activeTab"],
+  "host_permissions": ["https://www.google.com/maps/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Toggle Maps scraper sidebar"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.google.com/maps/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.html", "panel.css", "panel.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

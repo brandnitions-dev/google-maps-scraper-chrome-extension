@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maps Lead Scraper</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <div id="shell" class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div class="brand-text">
+            <div class="brand-title">Maps Lead Scraper</div>
+            <div class="brand-sub">Sticky sidebar · Debug-first</div>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button type="button" class="icon-btn" id="btnMinimize" title="Minimize to rail" aria-label="Minimize">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 14h16v2H4z" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="scroll">
+        <section class="card">
+          <div class="field-label">Keyword source</div>
+          <select id="mode" class="control">
+            <option value="single">Single search</option>
+            <option value="paste">Multiple — paste (one per line)</option>
+            <option value="file">Multiple — import .txt</option>
+          </select>
+
+          <div id="singleBox">
+            <div class="field-label">Search query</div>
+            <input type="text" id="keyword" class="control" placeholder="e.g. dentists in Austin" />
+          </div>
+
+          <div id="pasteBox" hidden>
+            <div class="field-label">One search per line</div>
+            <textarea id="batchPaste" class="control ta" rows="5" placeholder="Query one&#10;Query two"></textarea>
+          </div>
+
+          <div id="fileBox" hidden>
+            <div class="field-label">.txt file (UTF-8)</div>
+            <input type="file" id="batchFile" class="control file" accept=".txt,text/plain" />
+          </div>
+
+          <div class="field-label">Max contacts per search <span class="hint">(leave empty only if GET ALL)</span></div>
+          <input type="number" id="limit" class="control" min="1" placeholder="e.g. 50" />
+
+          <label class="check">
+            <input type="checkbox" id="getAll" />
+            <span>GET ALL — scroll until end of list (ignores max)</span>
+          </label>
+
+          <div class="row-btns">
+            <button type="button" class="btn primary" id="startBtn">Start queue</button>
+            <button type="button" class="btn danger" id="stopBtn" disabled>Stop</button>
+          </div>
+        </section>
+
+        <section class="card leads-card">
+          <div class="leads-head">
+            <div class="field-label" style="margin-bottom: 0">Collected leads</div>
+            <span class="log-badge" id="leadsCount">0 rows</span>
+          </div>
+          <p class="leads-hint">
+            Live table for this run (spec fields). Use export anytime — includes partial data after Stop. Per-keyword CSVs still download automatically when each search finishes.
+          </p>
+          <div class="leads-toolbar">
+            <button type="button" class="btn primary sm" id="exportSessionBtn">Export session CSV</button>
+            <button type="button" class="btn ghost sm" id="clearSessionBtn">Clear table</button>
+          </div>
+          <div class="leads-wrap">
+            <table class="leads-table" aria-label="Collected leads">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Query</th>
+                  <th>Title</th>
+                  <th>Phone</th>
+                  <th>Website</th>
+                </tr>
+              </thead>
+              <tbody id="leadsBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card log-card">
+          <div class="log-head">
+            <div class="log-title">
+              <span>Execution log</span>
+              <span class="log-badge" id="logCount">0 lines</span>
+            </div>
+            <div class="log-tools">
+              <label class="chk-mini" title="Show DEBUG lines"
+                ><input type="checkbox" id="verbose" checked /> Verbose</label
+              >
+              <button type="button" class="btn ghost sm" id="clearLog">Clear</button>
+              <button type="button" class="btn ghost sm" id="copyLog">Copy all</button>
+            </div>
+          </div>
+          <div id="logView" class="log-view" tabindex="0" aria-label="Debug log output"></div>
+        </section>
+      </div>
+    </div>
+
+    <button type="button" id="rail" class="rail" hidden aria-label="Expand scraper panel">
+      <span class="rail-chevron">◀</span>
+      <span class="rail-label">SCRAPER</span>
+    </button>
+
+    <script src="panel.js"></script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs / dependencies (if added later)
+*.log
+node_modules/
+
+# Extension packaging keys (never commit)
+*.pem
