@@ -47,6 +47,7 @@
           <div id="fileBox" hidden>
             <div class="field-label">.txt file (UTF-8)</div>
             <input type="file" id="batchFile" class="control file" accept=".txt,text/plain" />
+            <div class="leads-hint" id="batchFileLineHint" aria-live="polite"></div>
           </div>
 
           <div class="field-label">Max contacts per search <span class="hint">(leave empty only if GET ALL)</span></div>
@@ -56,10 +57,29 @@
             <input type="checkbox" id="getAll" />
             <span>GET ALL — scroll until end of list (ignores max)</span>
           </label>
+          <p class="leads-hint" id="batchBackgroundHint">
+            Bulk tip: Chrome slows this tab when it is in the background or the window is minimized. Leave the Maps tab
+            focused for fastest runs; we still try to keep the screen awake while a batch is running.
+          </p>
 
           <div class="row-btns">
             <button type="button" class="btn primary" id="startBtn">Start queue</button>
             <button type="button" class="btn danger" id="stopBtn" disabled>Stop</button>
+          </div>
+        </section>
+
+        <section class="card enrich-remote-card">
+          <div class="field-label">Remote enrich API (optional · VPS)</div>
+          <p class="leads-hint" style="margin-top: 0">
+            Default <span class="mono-hint">http://127.0.0.1:18765</span> for local. For Docker/VPS, set base URL (e.g.
+            <span class="mono-hint">http://YOUR_IP:31876</span>) and an API key from the admin UI.
+          </p>
+          <input type="text" id="enrichApiBaseUrl" class="control" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:18765" />
+          <div class="field-label">API key</div>
+          <input type="password" id="enrichApiKey" class="control" spellcheck="false" autocomplete="off" placeholder="gms_… (empty = local /v1/enrich no auth)" />
+          <div class="row-btns">
+            <button type="button" class="btn ghost sm" id="testEnrichRemoteBtn">Test connection</button>
+            <button type="button" class="btn primary sm" id="saveEnrichRemoteBtn">Save connection</button>
           </div>
         </section>
 
@@ -68,10 +88,39 @@
             <div class="field-label" style="margin-bottom: 0">Collected leads</div>
             <span class="log-badge" id="leadsCount">0 rows</span>
           </div>
+          <div class="server-status" id="enrichServerStatus" aria-live="polite">Server: …</div>
+          <div class="enrich-server-actions">
+            <button type="button" class="btn ghost sm" id="refreshEnrichHealthBtn" title="GET /health using saved API base URL">Check server</button>
+          </div>
+          <p class="leads-hint remote-enrich-only" id="remoteEnrichServerNote" hidden>
+            Remote API: run the stack on your server (<span class="mono-hint">docker compose</span> on the VPS). Local <span class="mono-hint">.bat</span> and “automatic” start are hidden while the base URL above is not localhost.
+          </p>
+          <div id="localEnrichServerPanelBlock">
+            <div class="native-start-row">
+              <button type="button" class="btn native-start" id="startEnrichServerNativeBtn" title="Opens start_enrich_server.bat via Native Messaging (one-time host registration)">
+                Start enrich server (automatic)
+              </button>
+            </div>
+            <div class="how-to-start" id="howToStartServer">
+              <div class="how-to-title">How to start the server (local only)</div>
+              <ol class="how-to-steps">
+                <li>Run <span class="mono-hint">setup.bat</span> once in <span class="mono-hint">GmapsAgent\EmailEnricher</span>.</li>
+                <li>Double-click <span class="mono-hint">start_enrich_server.bat</span> in that folder (or use Copy path below).</li>
+              </ol>
+              <div class="saved-folder-line" id="savedEnrichFolderLine">Saved folder: …</div>
+              <div class="how-to-actions">
+                <button type="button" class="btn ghost sm" id="openEnrichOptionsBtn" title="Extension options">Set folder path (optional)</button>
+                <button type="button" class="btn ghost sm" id="copyBatPathBtn" title="Full path to start_enrich_server.bat">Copy path to .bat</button>
+                <button type="button" class="btn ghost sm" id="copyFolderPathBtn" title="Saved EmailEnricher folder">Copy folder path</button>
+              </div>
+            </div>
+          </div>
           <p class="leads-hint">
             Live table for this run (spec fields). Use export anytime — includes partial data after Stop. Per-keyword CSVs still download automatically when each search finishes.
+            Use <strong>Enrich emails</strong> for streamed fill-in (<span class="mono-hint">GET /health</span>, <span class="mono-hint">POST /v1/enrich</span>).
           </p>
           <div class="leads-toolbar">
+            <button type="button" class="btn primary sm" id="enrichEmailsBtn">Enrich emails</button>
             <button type="button" class="btn primary sm" id="exportSessionBtn">Export session CSV</button>
             <button type="button" class="btn ghost sm" id="clearSessionBtn">Clear table</button>
           </div>
@@ -84,6 +133,7 @@
                   <th>Title</th>
                   <th>Phone</th>
                   <th>Website</th>
+                  <th>Email</th>
                 </tr>
               </thead>
               <tbody id="leadsBody"></tbody>

@@ -201,8 +201,122 @@ body {
   color: var(--muted);
 }
 
+.mono-hint {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--accent);
+}
+
+.server-status {
+  font-size: 10px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #010409;
+  color: var(--muted);
+}
+
+.server-status.ok {
+  border-color: rgba(63, 185, 80, 0.45);
+  color: var(--ok);
+}
+
+.server-status.down {
+  border-color: rgba(248, 81, 73, 0.45);
+  color: var(--danger);
+}
+
+.enrich-server-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 6px;
+}
+
+.native-start-row {
+  margin: 0 0 8px;
+}
+
+.btn.native-start {
+  width: 100%;
+  flex: none;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-color: rgba(163, 113, 247, 0.55);
+  background: linear-gradient(180deg, rgba(163, 113, 247, 0.22) 0%, rgba(31, 111, 235, 0.12) 100%);
+  color: #e6edf3;
+  box-shadow: 0 0 0 1px rgba(163, 113, 247, 0.15) inset;
+}
+
+.btn.native-start:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(88, 166, 255, 0.25) 0%, rgba(31, 111, 235, 0.18) 100%);
+  color: #fff;
+}
+
+.btn.native-start:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.how-to-start {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #010409;
+}
+
+.how-to-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.how-to-steps {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.how-to-steps li {
+  margin-bottom: 4px;
+}
+
+.saved-folder-line {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--accent);
+  font-family: var(--mono);
+  word-break: break-all;
+  margin-bottom: 8px;
+}
+
+.how-to-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.server-status.checking {
+  color: var(--warn);
+}
+
 .leads-toolbar {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -252,6 +366,10 @@ body {
 
 .leads-table td:nth-child(3) {
   max-width: 120px;
+}
+
+.leads-table td:nth-child(6) {
+  max-width: 110px;
 }
 
 .btn {

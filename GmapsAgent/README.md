@@ -51,7 +51,5 @@ Optional: open the extension **Options** page to save the enrich base URL / API 
 
 ## Repo layout note
 
-
-
-The standalone copies live under **`GmapsAgent/`** only. The repository root extension files and root **`EmailEnricher/`** folder are **not** modified by this bundle; keep working in **`GmapsAgent/`** for integrated or future extension-plus-enricher changes so the root copies stay untouched until you deliberately sync them.
+The Chrome extension lives in **`GmapsAgent/extension/`** (recommended load path). The same files are also copied to the **repository root** so either folder works with **Load unpacked**. Always pick a folder that contains **`manifest.json`** directly — not the parent `GmapsAgent/` folder alone.
 
