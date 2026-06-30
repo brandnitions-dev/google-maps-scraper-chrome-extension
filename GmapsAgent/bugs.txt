@@ -1,0 +1,13 @@
+
+Fix the Google Maps scraper Chrome extension. It has two bugs that need to be solved together:
+Bug 1 — Incomplete scroll: The extension is not fully scrolling through all listings before collecting data. You must scroll the results panel incrementally, wait for new results to load after each scroll, and only stop scrolling when the panel truly cannot scroll any further. Do not use a fixed setTimeout to decide when scrolling is done. Use the selectors I already gave you to detect when the scroll is complete — they are correct, use them exactly as provided, stop second-guessing them.
+Bug 2 — Query loop breaks: After finishing one query it either stops completely or moves to the next query before the page has fully loaded. Use the selectors I already gave you to detect when the results panel is visible and ready — do not replace them with something else, do not approximate them, use them. Only start scrolling once that selector confirms the panel is in the DOM. Only move to the next query once scrolling and collection are fully done.
+The full correct flow must be:
+
+Read all queries from the uploaded .txt file or pasted list
+Navigate to query 1 on Google Maps
+Use the provided selectors to wait until the results panel is confirmed in the DOM
+Scroll the results panel using the provided selectors, pausing after each scroll until no new listings appear
+Collect all listing data
+Then and only then navigate to query 2
+Repeat until all queries are done

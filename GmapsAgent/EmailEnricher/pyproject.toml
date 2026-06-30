@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "email-enricher"
+version = "0.1.0"
+description = "Enrich Maps CSV exports with emails from business websites"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27,<1",
+    "beautifulsoup4>=4.12,<5",
+    "rich>=13,<14",
+    "playwright>=1.40,<2",
+    "starlette>=0.37,<1",
+    "uvicorn>=0.27,<1",
+]
+
+[project.optional-dependencies]
+cloud = [
+    "bcrypt>=4.1,<5",
+    "PyJWT>=2.8,<3",
+]
+
+[project.scripts]
+email-enricher = "email_enricher.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["email_enricher*"]

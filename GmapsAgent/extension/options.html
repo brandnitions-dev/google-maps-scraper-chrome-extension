@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maps Lead Scraper — Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Enrich API (local or VPS)</h1>
+      <p class="note">
+        Same values as the sidebar <strong>Remote enrich API</strong> block. Base URL must not end with a slash. For VPS Docker deploy, API is usually port
+        <code>31876</code>; admin UI is <code>31877</code> (see <code>GmapsAgent/deploy/vps/README.md</code>).
+      </p>
+      <label class="lbl" for="enrichApiBaseUrl">API base URL</label>
+      <input type="text" id="enrichApiBaseUrl" class="field" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:18765" />
+      <label class="lbl" for="enrichApiKey">API key (optional locally; required on VPS cloud)</label>
+      <input type="password" id="enrichApiKey" class="field" spellcheck="false" autocomplete="off" placeholder="gms_…" />
+
+      <div class="row">
+        <button type="button" class="btn primary" id="saveEnrichBtn">Save enrich settings</button>
+      </div>
+      <p id="enrichStatus" class="status" aria-live="polite"></p>
+
+      <hr class="sep" />
+
+      <h1>Email enricher folder (local Copy path)</h1>
+      <p class="note">
+        Paste the <strong>full absolute path</strong> to your <code>EmailEnricher</code> directory (the folder that contains
+        <code>start_enrich_server.bat</code>). This is only used by the sidebar <strong>Copy path</strong> buttons. Chrome cannot open File Explorer for you.
+      </p>
+      <label class="lbl" for="emailEnricherDir">Path (no trailing slash)</label>
+      <input type="text" id="emailEnricherDir" class="field" spellcheck="false" autocomplete="off" placeholder="e.g. C:\Users\you\...\GmapsAgent\EmailEnricher" />
+      <div class="row">
+        <button type="button" class="btn primary" id="saveBtn">Save</button>
+        <button type="button" class="btn" id="clearBtn">Clear</button>
+      </div>
+      <p id="status" class="status" aria-live="polite"></p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

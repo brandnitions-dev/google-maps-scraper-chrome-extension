@@ -1,0 +1,9 @@
+{
+  "name": "com.gmapsagent.enrich",
+  "description": "TEMPLATE ONLY — run register_native_host.bat; Windows registry must point to com.gmapsagent.enrich.installed.json (generated).",
+  "path": "FULL_PATH_TO_PYTHON_HOST_SCRIPT",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID_HERE/"
+  ]
+}

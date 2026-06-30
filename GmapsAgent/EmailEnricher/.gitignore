@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.log
+enriched_data/*.csv
+enriched_data/*.json
+!enriched_data/.gitkeep
+data/*.csv
+!data/.gitkeep
+native_host/com.gmapsagent.enrich.installed.json
+native_host/GmapsAgentEnrichLauncher.exe

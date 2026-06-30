@@ -1,0 +1,51 @@
+# Isolated stack — does not modify host nginx. Verify host ports are free:
+#   ss -tlnp | grep -E '31876|31877'
+#
+# From this directory:
+#   docker compose --env-file .env up -d --build
+#
+services:
+  api:
+    build:
+      context: ../../EmailEnricher
+      dockerfile: Dockerfile.vps
+    container_name: gmaps_enrich_api
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD_BCRYPT: ${ADMIN_PASSWORD_BCRYPT}
+      JWT_SECRET: ${JWT_SECRET}
+      SQLITE_PATH: /data/enricher.db
+      API_HOST: 0.0.0.0
+      API_PORT: "18765"
+    volumes:
+      - enricher_data:/data
+    networks:
+      - gmaps_enrich_net
+    ports:
+      - "31876:18765"
+    shm_size: "1gb"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+    container_name: gmaps_enrich_admin
+    environment:
+      API_INTERNAL_URL: http://api:18765
+    networks:
+      - gmaps_enrich_net
+    ports:
+      - "31877:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+networks:
+  gmaps_enrich_net:
+    driver: bridge
+    name: gmaps_enrich_net
+
+volumes:
+  enricher_data:
+    name: gmaps_enrich_sqlite

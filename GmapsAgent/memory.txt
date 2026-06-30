@@ -1,0 +1,66 @@
+# GmapsAgent — VPS enrich + extension (project memory)
+
+This file documents **architecture and operations**. Do **not** store live passwords or API keys here; use the server `.env` and the admin UI only.
+
+## What we built
+
+1. **Isolated Docker stack** under `deploy/vps`: bridge network `gmaps_enrich_net`, **no host network mode**, **no changes to existing nginx** on the VPS. Published ports default to **31876** (Python API) and **31877** (Next.js admin). Edit `deploy/vps/docker-compose.yml` if those host ports conflict.
+
+2. **Python API** (`EmailEnricher/email_enricher/cloud_server.py`): `GET /health` (`mode: cloud`), `POST /v1/enrich` with `Authorization: Bearer <api_key>` and same SSE `row` / `done` events as local. Admin JSON: `POST /admin/login`, `GET|POST /admin/api-keys`, `DELETE /admin/api-keys/{id}`. Keys are bcrypt-hashed in SQLite on Docker volume `gmaps_enrich_sqlite` (path inside container `/data/enricher.db`).
+
+3. **Local dev server** (`EmailEnricher/email_enricher/local_server.py`) still serves `GET /health` (`mode: local`), `POST /enrich`, and `POST /v1/enrich` without auth for the same extension code path.
+
+4. **Next admin UI** (`deploy/vps/admin-ui`): login then dashboard to create/revoke API keys. Server routes proxy to `API_INTERNAL_URL` (Compose: `http://api:18765`). Session: httpOnly cookie `gms_admin` holding the JWT from Python.
+
+5. **Chrome extension** (`extension`): optional remote base URL + API key in `chrome.storage.sync` (`enrichApiBaseUrl`, `enrichApiKey`). Manifest includes `optional_host_permissions` (`http://*/*`, `https://*/*`) so Chrome can grant access to your VPS origin on Save. Enrich uses `POST {base}/v1/enrich` with Bearer when a key is set (required for cloud).
+
+## Environment variables (VPS `.env`)
+
+- `ADMIN_USER` — admin username (default `admin`)
+- `ADMIN_PASSWORD_BCRYPT` — bcrypt hash of admin password (generate off-box; never commit plaintext)
+- `JWT_SECRET` — HS256 secret for admin JWTs (min ~16 chars)
+
+## Workspace vs VPS (no automatic remote deploy)
+
+- Changes in Cursor only update **files on your machine** (this repo). They do **not** restart containers on a VPS by themselves.
+- **You** (or a CI job **you** set up) must **SSH** to the server, sync the tree (`git pull`, `scp`, rsync, etc.), then from `deploy/vps` run: `docker compose --env-file .env up -d --build`.
+- If SSH works on **your** PC, run that deploy from **your** terminal after pulling the repo—or add a small script in-repo that wraps `ssh user@host 'cd ... && docker compose ...'` (keep secrets out of git).
+
+### What “already SSH authed” meant in chat
+
+- That phrase means **your workstation** can `ssh` to the VPS (keys or password in **your** environment). It is **not** a claim that Cursor/the model keeps an independent SSH session or VPS credentials.
+- A typical deploy thread: assistant edits **this repo** (compose, `cloud_server`, admin UI, extension) and may print **commands**; **your** shell (or Cursor Agent running **on your machine**) runs `ssh` / `docker compose` against the IP you gave. After that, services listen on host ports **31876** (API) and **31877** (admin).
+
+## Extension: VPS URL + Chrome permission
+
+- **API base** must be `http://<VPS>:31876` (not `127.0.0.1:18765` unless the API runs locally).
+- **Manifest:** only localhost is in fixed `host_permissions`; the VPS uses **`optional_host_permissions`**. After setting the URL, use **Save enrich remote** (or **Test connection**, which also requests access) and **Allow** when Chrome prompts—or background `fetch` to the API returns **Failed to fetch** even if `curl` from your PC works.
+- Reload the unpacked extension after changing `extension/*`.
+
+## Typical operator flow
+
+1. On VPS: copy `GmapsAgent/deploy/vps` plus `GmapsAgent/EmailEnricher` (or the whole `GmapsAgent` tree). Create `.env` from `deploy/vps/.env.example`, set secrets, run `docker compose --env-file .env up -d --build` from `deploy/vps`.
+2. Open `http://<VPS>:31877`, sign in, Create key, copy `gms_…` once.
+3. In Chrome extension: set API base `http://<VPS>:31876`, paste key, Test connection, Save; approve host permission if asked.
+4. Use Enrich emails in the sidebar.
+
+## Files worth knowing
+
+- API image: `EmailEnricher/Dockerfile.vps`
+- Key storage: `EmailEnricher/email_enricher/key_store.py`
+- Deploy how-to: `deploy/vps/README.md`
+- Extension: `extension/panel.html`, `extension/panel.js`, `extension/manifest.json`
+
+## Security notes
+
+- Prefer firewall (e.g. ufw) allowing only your IP to 31876/31877 until TLS is in place.
+- HTTP to raw IP is for first deploy; add HTTPS before wider exposure.
+- Rotate any password ever pasted into chat or logs.
+
+## Recent Critical Fixes (Scraping Loop)
+
+1. **Two-Phase Scrape (`scrapeOneKeyword`)**: The `content.js` scraper now strictly separates scrolling from collection. 
+   - **Phase 1 (Scroll)**: Incremental scrolling to `scrollHeight` using dynamic waits to detect DOM growth. It gathers `href`s of all listings first. It also includes a 1-second "settle delay" when reaching the end of the list to ensure React finishes attaching final links.
+   - **Phase 2 (Collect)**: Iterates over the collected URLs, scrolling the specific node back into view if Maps virtualized it, and extracts data. This avoids "lost feed" errors disrupting the scroll state.
+2. **Hidden False Positives**: `listEndVisible()` now explicitly checks `getBoundingClientRect().height > 0`. Maps often includes hidden "End of the list" texts for screen readers that were prematurely halting the scraper.
+3. **Manifest V3 CSV Download**: `URL.createObjectURL(blob)` throws an error inside Chrome Service Workers (`background.js`). `downloadKeywordCsv` was refactored to encode the CSV as a Base64 data-URL (`data:text/csv;charset=utf-8,...`), which fixes the bug where batch queues would silently hang after finishing the first keyword.

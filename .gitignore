@@ -12,6 +12,12 @@ Desktop.ini
 # Logs / dependencies (if added later)
 *.log
 node_modules/
+.venv/
+venv/
+
+# Packaged deploy blobs (keep source in repo)
+*.tgz
+*.zip
 
 # Extension packaging keys (never commit)
 *.pem

@@ -1,0 +1,48 @@
+# Dependencies & build artifacts
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets & local env (never commit)
+.env
+.env.*
+!.env.example
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Packaged / deploy blobs
+*.tgz
+*.zip
+*.pem
+
+# EmailEnricher local outputs (keep .gitkeep if present)
+EmailEnricher/enriched_data/*.csv
+EmailEnricher/enriched_data/*.json
+EmailEnricher/data/*.csv
+!EmailEnricher/enriched_data/.gitkeep
+!EmailEnricher/data/.gitkeep
+
+# Native host generated (register script produces these)
+EmailEnricher/native_host/com.gmapsagent.enrich.installed.json
+EmailEnricher/native_host/GmapsAgentEnrichLauncher.exe
+
+# Logs
+*.log
