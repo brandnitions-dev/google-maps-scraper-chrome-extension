@@ -3,6 +3,7 @@ const MAX_LINES = 600;
 const DEFAULT_ENRICH_BASE = "http://127.0.0.1:18765";
 const STORAGE_ENRICH_BASE = "enrichApiBaseUrl";
 const STORAGE_ENRICH_KEY = "enrichApiKey";
+const STORAGE_ENRICH_TARGET = "enrichApiTarget";
 
 /** Must match EmailEnricher `email_enricher.local_server.DEFAULT_PORT` (18765) when local. */
 const NATIVE_MESSAGING_HOST = "com.gmapsagent.enrich";
@@ -39,52 +40,90 @@ function normalizeEnrichBase(s) {
   return t || DEFAULT_ENRICH_BASE;
 }
 
+function inferEnrichTargetFromBase(base) {
+  return enrichBaseLooksLocal(base) ? "local" : "remote";
+}
+
+function normalizeEnrichTarget(s, fallbackBase) {
+  if (s === "local" || s === "remote") return s;
+  return inferEnrichTargetFromBase(fallbackBase || DEFAULT_ENRICH_BASE);
+}
+
+function getPanelEnrichTarget() {
+  const remoteBtn = $("enrichTargetRemoteBtn");
+  if (remoteBtn?.classList.contains("active")) return "remote";
+  const localBtn = $("enrichTargetLocalBtn");
+  if (localBtn?.classList.contains("active")) return "local";
+  return "";
+}
+
+function setPanelEnrichTarget(target) {
+  const localBtn = $("enrichTargetLocalBtn");
+  const remoteBtn = $("enrichTargetRemoteBtn");
+  const hint = $("enrichTargetHint");
+  const isLocal = target !== "remote";
+  if (localBtn) localBtn.classList.toggle("active", isLocal);
+  if (remoteBtn) remoteBtn.classList.toggle("active", !isLocal);
+  if (hint) {
+    hint.textContent = isLocal
+      ? `Using local API at ${DEFAULT_ENRICH_BASE} (no key). Online URL stays saved.`
+      : "Using the Online / VPS URL below. Switch to Local if that host is down.";
+  }
+}
+
+function persistEnrichTarget(target) {
+  return new Promise((resolve) => {
+    chrome.storage.sync.set({ [STORAGE_ENRICH_TARGET]: target === "remote" ? "remote" : "local" }, () => {
+      resolve(!chrome.runtime.lastError);
+    });
+  });
+}
+
 function loadEnrichSettings() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get([STORAGE_ENRICH_BASE, STORAGE_ENRICH_KEY], (r) => {
+    chrome.storage.sync.get([STORAGE_ENRICH_BASE, STORAGE_ENRICH_KEY, STORAGE_ENRICH_TARGET], (r) => {
+      const base = normalizeEnrichBase(r[STORAGE_ENRICH_BASE]);
       resolve({
-        base: normalizeEnrichBase(r[STORAGE_ENRICH_BASE]),
+        base,
         apiKey: String(r[STORAGE_ENRICH_KEY] ?? "").trim(),
+        target: normalizeEnrichTarget(r[STORAGE_ENRICH_TARGET], r[STORAGE_ENRICH_BASE] == null ? DEFAULT_ENRICH_BASE : base),
+        neverSavedBase: r[STORAGE_ENRICH_BASE] === undefined || r[STORAGE_ENRICH_BASE] === null,
       });
     });
   });
 }
 
 /**
- * Combines panel inputs with chrome.storage.sync. If the base field still shows the default
- * localhost URL but sync already has another URL (saved from Options or earlier), use sync —
- * otherwise Test/health keep hitting 127.0.0.1 while you think you're on VPS.
+ * Local target always hits 127.0.0.1:18765 (no key). Remote uses the online URL/key fields
+ * without overwriting them when you flip back to Local.
  */
 async function getEffectiveEnrichBaseAndKey() {
-  const raw = await new Promise((resolve) => {
-    chrome.storage.sync.get([STORAGE_ENRICH_BASE, STORAGE_ENRICH_KEY], (r) => {
-      resolve(r || {});
-    });
-  });
+  const saved = await loadEnrichSettings();
   const rawB = String($("enrichApiBaseUrl")?.value ?? "").trim();
   const rawK = String($("enrichApiKey")?.value ?? "").trim();
-  const savedBase = normalizeEnrichBase(raw[STORAGE_ENRICH_BASE]);
-  const savedKey = String(raw[STORAGE_ENRICH_KEY] ?? "").trim();
-  const neverSavedBase = raw[STORAGE_ENRICH_BASE] === undefined || raw[STORAGE_ENRICH_BASE] === null;
+  const panelTarget = getPanelEnrichTarget();
+  const target = panelTarget || saved.target;
 
-  let base = rawB ? normalizeEnrichBase(rawB) : savedBase;
-  let apiKey = rawK !== "" ? rawK : savedKey;
-
-  const panelShowsDefaultLocal =
-    !!rawB && normalizeEnrichBase(rawB) === DEFAULT_ENRICH_BASE && enrichBaseLooksLocal(DEFAULT_ENRICH_BASE);
-  let usedSavedBecausePanelDefaultLocal = false;
-  if (panelShowsDefaultLocal && savedBase !== DEFAULT_ENRICH_BASE) {
-    base = savedBase;
-    if (!rawK) apiKey = savedKey;
-    usedSavedBecausePanelDefaultLocal = true;
+  if (target === "local") {
+    return {
+      base: DEFAULT_ENRICH_BASE,
+      apiKey: "",
+      neverSavedBase: saved.neverSavedBase,
+      usedSavedBecausePanelDefaultLocal: false,
+      savedBase: saved.base,
+      target,
+    };
   }
 
+  const base = rawB ? normalizeEnrichBase(rawB) : saved.base;
+  const apiKey = rawK !== "" ? rawK : saved.apiKey;
   return {
     base,
     apiKey,
-    neverSavedBase,
-    usedSavedBecausePanelDefaultLocal,
-    savedBase,
+    neverSavedBase: saved.neverSavedBase,
+    usedSavedBecausePanelDefaultLocal: false,
+    savedBase: saved.base,
+    target,
   };
 }
 
@@ -127,30 +166,36 @@ function enrichBaseLooksLocal(base) {
   }
 }
 
-function updateLocalEnrichServerPanelVisibility() {
+function updateLocalEnrichServerPanelVisibility(targetOverride) {
   const block = $("localEnrichServerPanelBlock");
   const note = $("remoteEnrichServerNote");
-  const u = $("enrichApiBaseUrl");
-  const raw = String(u?.value ?? "").trim();
-  const apply = (effectiveBase) => {
-    const local = enrichBaseLooksLocal(effectiveBase);
+  const apply = (target) => {
+    const local = target !== "remote";
     if (block) block.hidden = !local;
     if (note) note.hidden = local;
+    setPanelEnrichTarget(local ? "local" : "remote");
   };
-  if (raw) {
-    apply(normalizeEnrichBase(raw));
+  if (targetOverride === "local" || targetOverride === "remote") {
+    apply(targetOverride);
     return;
   }
-  loadEnrichSettings().then(({ base }) => apply(base));
+  const panelTarget = getPanelEnrichTarget();
+  if (panelTarget) {
+    apply(panelTarget);
+    return;
+  }
+  loadEnrichSettings().then(({ target }) => apply(target));
 }
 
 function applyEnrichRemoteInputsFromStorage() {
-  return loadEnrichSettings().then(({ base, apiKey }) => {
+  return loadEnrichSettings().then(({ base, apiKey, target }) => {
     const u = $("enrichApiBaseUrl");
     const k = $("enrichApiKey");
-    if (u) u.value = base;
+    if (u && !enrichBaseLooksLocal(base)) u.value = base;
+    else if (u && base && !u.value) u.value = enrichBaseLooksLocal(base) ? "" : base;
     if (k) k.value = apiKey;
-    updateLocalEnrichServerPanelVisibility();
+    setPanelEnrichTarget(target);
+    updateLocalEnrichServerPanelVisibility(target);
   });
 }
 
@@ -245,7 +290,7 @@ if (chrome.storage?.onChanged) {
       const nv = changes[STORAGE_KEY_EMAIL_ENRICHER_DIR].newValue;
       refreshSavedFolderUI(normalizeEmailEnricherDir(nv));
     }
-    if (changes[STORAGE_ENRICH_BASE] || changes[STORAGE_ENRICH_KEY]) {
+    if (changes[STORAGE_ENRICH_BASE] || changes[STORAGE_ENRICH_KEY] || changes[STORAGE_ENRICH_TARGET]) {
       applyEnrichRemoteInputsFromStorage();
     }
   });
@@ -289,6 +334,35 @@ function $(id) {
 const enrichBaseUrlInput = $("enrichApiBaseUrl");
 if (enrichBaseUrlInput) {
   enrichBaseUrlInput.addEventListener("input", () => updateLocalEnrichServerPanelVisibility());
+}
+
+async function selectEnrichTarget(target, { persist = true, log = true } = {}) {
+  const next = target === "remote" ? "remote" : "local";
+  setPanelEnrichTarget(next);
+  updateLocalEnrichServerPanelVisibility(next);
+  if (persist) await persistEnrichTarget(next);
+  const useLocalBtn = $("useLocalInsteadBtn");
+  if (useLocalBtn && next === "local") useLocalBtn.hidden = true;
+  if (log) {
+    appendLog({
+      level: "info",
+      message:
+        next === "local"
+          ? `Switched to local enrich API (${DEFAULT_ENRICH_BASE}). Online URL was not overwritten.`
+          : "Switched to Online / VPS enrich API.",
+      ts: Date.now(),
+    });
+  }
+  await checkEnrichServerHealth();
+}
+
+const enrichTargetLocalBtn = $("enrichTargetLocalBtn");
+if (enrichTargetLocalBtn) {
+  enrichTargetLocalBtn.addEventListener("click", () => selectEnrichTarget("local"));
+}
+const enrichTargetRemoteBtn = $("enrichTargetRemoteBtn");
+if (enrichTargetRemoteBtn) {
+  enrichTargetRemoteBtn.addEventListener("click", () => selectEnrichTarget("remote"));
 }
 
 function parseLines(text) {
@@ -513,22 +587,26 @@ function enricherProbeEnrichViaBackground(baseUrl, apiKey) {
 async function checkEnrichServerHealth() {
   const el = $("enrichServerStatus");
   if (!el) return false;
+  const useLocalBtn = $("useLocalInsteadBtn");
   el.className = "server-status checking";
   el.textContent = "Server: checking…";
-  const { base } = await getEffectiveEnrichBaseAndKey();
+  const { base, target } = await getEffectiveEnrichBaseAndKey();
+  const label = target === "remote" ? "online" : "local";
 
   const perm = await ensureHostPermissionForUrl(base);
   if (!perm.ok) {
     el.textContent = "Server: blocked — allow Chrome access to your API URL (Save connection / prompt).";
     el.className = "server-status down";
+    if (useLocalBtn) useLocalBtn.hidden = target !== "remote";
     return false;
   }
 
   async function applyOk(j) {
     const v = j.version != null ? String(j.version) : "?";
     const mode = j.mode === "cloud" ? "cloud" : "local";
-    el.textContent = `Server: up (v${v}, ${mode}) @ ${base}`;
+    el.textContent = `Server: up (v${v}, ${mode}) @ ${base} · ${label}`;
     el.className = "server-status ok";
+    if (useLocalBtn) useLocalBtn.hidden = true;
     return true;
   }
 
@@ -555,8 +633,12 @@ async function checkEnrichServerHealth() {
     /* panel fetch failed */
   }
 
-  el.textContent = `Server: down — ${base}`;
+  el.textContent =
+    target === "remote"
+      ? `Server: down — ${base} (online). Switch to Local if the VPS is off.`
+      : `Server: down — ${base} (local). Start EmailEnricher\\start_enrich_server.bat.`;
   el.className = "server-status down";
+  if (useLocalBtn) useLocalBtn.hidden = target !== "remote";
   return false;
 }
 
@@ -800,33 +882,28 @@ const testEnrichRemoteBtn = $("testEnrichRemoteBtn");
 if (testEnrichRemoteBtn) {
   testEnrichRemoteBtn.addEventListener("click", async () => {
     const eff = await getEffectiveEnrichBaseAndKey();
-    const { base, apiKey, neverSavedBase, usedSavedBecausePanelDefaultLocal, savedBase } = eff;
+    const { base, apiKey, neverSavedBase, target } = eff;
 
-    if (neverSavedBase && base === DEFAULT_ENRICH_BASE) {
+    if (target === "remote" && neverSavedBase && !String($("enrichApiBaseUrl")?.value ?? "").trim()) {
       appendLog({
         level: "error",
-        message: "No enrich API base URL in chrome.storage yet.",
+        message: "No online enrich API URL saved yet.",
         detail:
-          "Paste http://YOUR_VPS_IP:31876 in the first field, click Save enrich remote, allow host access when Chrome asks, then Test again. (Until you Save, the UI can show the localhost placeholder.)",
+          "Paste http://YOUR_VPS_IP:31876, click Save connection, allow host access when Chrome asks, then Test again. Or switch to Local if the VPS is off.",
         ts: Date.now(),
       });
       return;
     }
 
-    if (usedSavedBecausePanelDefaultLocal) {
+    if (target === "local") {
       appendLog({
-        level: "warn",
-        message: `The base field still shows ${DEFAULT_ENRICH_BASE}, but a different URL is saved — using saved base for this Test.`,
-        detail: `Saved: ${savedBase}`,
+        level: "info",
+        message: `Testing local enrich API at ${DEFAULT_ENRICH_BASE}`,
         ts: Date.now(),
       });
-      await applyEnrichRemoteInputsFromStorage();
     } else {
       const saved = await loadEnrichSettings();
-      const u = $("enrichApiBaseUrl");
-      const k = $("enrichApiKey");
-      const rawB = String(u?.value ?? "").trim();
-      const rawK = String(k?.value ?? "").trim();
+      const rawB = String($("enrichApiBaseUrl")?.value ?? "").trim();
       if (!rawB) {
         appendLog({
           level: "info",
@@ -837,7 +914,7 @@ if (testEnrichRemoteBtn) {
         appendLog({
           level: "warn",
           message:
-            "Panel differs from last Save — this Test uses effective URL (panel + sync). Click Save enrich remote so values match.",
+            "Panel differs from last Save — this Test uses the Online URL as typed. Click Save connection so values match.",
           detail: `Saved base: ${saved.base}\nEffective base: ${base}`,
           ts: Date.now(),
         });
@@ -901,22 +978,37 @@ if (saveEnrichRemoteBtn) {
       });
       return;
     }
-    chrome.storage.sync.set(
-      {
-        [STORAGE_ENRICH_BASE]: base,
-        [STORAGE_ENRICH_KEY]: apiKey,
-      },
-      () => {
+    const target = getPanelEnrichTarget() || "local";
+    const payload = {
+      [STORAGE_ENRICH_KEY]: apiKey,
+      [STORAGE_ENRICH_TARGET]: target,
+    };
+    if (target === "remote" || !enrichBaseLooksLocal(base)) {
+      payload[STORAGE_ENRICH_BASE] = base;
+    }
+    chrome.storage.sync.set(payload, () => {
         const err = chrome.runtime.lastError;
         if (err) {
           appendLog({ level: "error", message: err.message || "Save failed", ts: Date.now() });
           return;
         }
-        appendLog({ level: "info", message: "Saved enrich API base URL + key.", ts: Date.now() });
+        appendLog({
+          level: "info",
+          message:
+            target === "local"
+              ? `Saved: using local ${DEFAULT_ENRICH_BASE}. Online URL was left as-is.`
+              : "Saved online enrich API URL + key.",
+          ts: Date.now(),
+        });
         checkEnrichServerHealth();
       }
     );
   });
+}
+
+const useLocalInsteadBtn = $("useLocalInsteadBtn");
+if (useLocalInsteadBtn) {
+  useLocalInsteadBtn.addEventListener("click", () => selectEnrichTarget("local"));
 }
 
 const refreshEnrichHealthBtn = $("refreshEnrichHealthBtn");
@@ -926,7 +1018,7 @@ if (refreshEnrichHealthBtn) {
     const up = await checkEnrichServerHealth();
     appendLog({
       level: up ? "info" : "warn",
-      message: up ? "Enrich server responded to /health." : "Enrich server not reachable (see saved base URL).",
+      message: up ? "Enrich server responded to /health." : "Enrich server not reachable — try Local if the VPS is off.",
       ts: Date.now(),
     });
   });

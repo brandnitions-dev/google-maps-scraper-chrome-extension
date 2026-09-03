@@ -69,17 +69,28 @@
         </section>
 
         <section class="card enrich-remote-card">
-          <div class="field-label">Remote enrich API (optional · VPS)</div>
+          <div class="field-label">Enrich server</div>
           <p class="leads-hint" style="margin-top: 0">
-            Default <span class="mono-hint">http://127.0.0.1:18765</span> for local. For Docker/VPS, set base URL (e.g.
-            <span class="mono-hint">http://YOUR_IP:31876</span>) and an API key from the admin UI.
+            Use <strong>Local</strong> when the VPS is off. Online URL and API key stay saved so you can switch back.
           </p>
-          <input type="text" id="enrichApiBaseUrl" class="control" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:18765" />
-          <div class="field-label">API key</div>
-          <input type="password" id="enrichApiKey" class="control" spellcheck="false" autocomplete="off" placeholder="gms_… (empty = local /v1/enrich no auth)" />
-          <div class="row-btns">
-            <button type="button" class="btn ghost sm" id="testEnrichRemoteBtn">Test connection</button>
-            <button type="button" class="btn primary sm" id="saveEnrichRemoteBtn">Save connection</button>
+          <div class="enrich-target-toggle" role="group" aria-label="Enrich server target">
+            <button type="button" class="btn sm enrich-target-btn active" id="enrichTargetLocalBtn" data-target="local">
+              Local
+            </button>
+            <button type="button" class="btn sm enrich-target-btn" id="enrichTargetRemoteBtn" data-target="remote">
+              Online / VPS
+            </button>
+          </div>
+          <p class="leads-hint" id="enrichTargetHint">Using local API at http://127.0.0.1:18765 (no key).</p>
+          <div id="remoteEnrichFields">
+            <div class="field-label">Online API URL <span class="hint">(kept when you switch to Local)</span></div>
+            <input type="text" id="enrichApiBaseUrl" class="control" spellcheck="false" autocomplete="off" placeholder="http://YOUR_IP:31876" />
+            <div class="field-label">API key</div>
+            <input type="password" id="enrichApiKey" class="control" spellcheck="false" autocomplete="off" placeholder="gms_… (required on VPS)" />
+            <div class="row-btns">
+              <button type="button" class="btn ghost sm" id="testEnrichRemoteBtn">Test connection</button>
+              <button type="button" class="btn primary sm" id="saveEnrichRemoteBtn">Save connection</button>
+            </div>
           </div>
         </section>
 
@@ -90,10 +101,13 @@
           </div>
           <div class="server-status" id="enrichServerStatus" aria-live="polite">Server: …</div>
           <div class="enrich-server-actions">
-            <button type="button" class="btn ghost sm" id="refreshEnrichHealthBtn" title="GET /health using saved API base URL">Check server</button>
+            <button type="button" class="btn ghost sm" id="refreshEnrichHealthBtn" title="GET /health using the selected Local or Online target">Check server</button>
+            <button type="button" class="btn ghost sm" id="useLocalInsteadBtn" hidden title="Switch to the local API at 127.0.0.1:18765">
+              Use local instead
+            </button>
           </div>
           <p class="leads-hint remote-enrich-only" id="remoteEnrichServerNote" hidden>
-            Remote API: run the stack on your server (<span class="mono-hint">docker compose</span> on the VPS). Local <span class="mono-hint">.bat</span> and “automatic” start are hidden while the base URL above is not localhost.
+            Online API: run the stack on your server (<span class="mono-hint">docker compose</span> on the VPS). Switch to <strong>Local</strong> if that host is down.
           </p>
           <div id="localEnrichServerPanelBlock">
             <div class="native-start-row">

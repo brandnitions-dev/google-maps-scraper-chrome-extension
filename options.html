@@ -10,12 +10,17 @@
     <main class="wrap">
       <h1>Enrich API (local or VPS)</h1>
       <p class="note">
-        Same values as the sidebar <strong>Remote enrich API</strong> block. Base URL must not end with a slash. For VPS Docker deploy, API is usually port
-        <code>31876</code>; admin UI is <code>31877</code> (see <code>GmapsAgent/deploy/vps/README.md</code>).
+        Same values as the sidebar <strong>Enrich server</strong> block. Switch to <strong>Local</strong> when the VPS is off — the online URL and key stay saved.
+        For VPS Docker deploy, API is usually port <code>31876</code>; admin UI is <code>31877</code> (see <code>GmapsAgent/deploy/vps/README.md</code>).
       </p>
-      <label class="lbl" for="enrichApiBaseUrl">API base URL</label>
-      <input type="text" id="enrichApiBaseUrl" class="field" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:18765" />
-      <label class="lbl" for="enrichApiKey">API key (optional locally; required on VPS cloud)</label>
+      <fieldset class="target-set">
+        <legend class="lbl">Active target</legend>
+        <label class="radio"><input type="radio" name="enrichApiTarget" id="enrichTargetLocal" value="local" /> Local — <code>http://127.0.0.1:18765</code></label>
+        <label class="radio"><input type="radio" name="enrichApiTarget" id="enrichTargetRemote" value="remote" /> Online / VPS</label>
+      </fieldset>
+      <label class="lbl" for="enrichApiBaseUrl">Online API URL (kept when Local is selected)</label>
+      <input type="text" id="enrichApiBaseUrl" class="field" spellcheck="false" autocomplete="off" placeholder="http://YOUR_IP:31876" />
+      <label class="lbl" for="enrichApiKey">API key (required on VPS cloud)</label>
       <input type="password" id="enrichApiKey" class="field" spellcheck="false" autocomplete="off" placeholder="gms_…" />
 
       <div class="row">

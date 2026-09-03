@@ -186,6 +186,34 @@ body {
   gap: 8px;
 }
 
+.enrich-target-toggle {
+  display: flex;
+  margin: 0 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.enrich-target-btn {
+  flex: 1;
+  border-radius: 0;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: #010409;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.enrich-target-btn:last-child {
+  border-right: none;
+}
+
+.enrich-target-btn.active {
+  background: rgba(88, 166, 255, 0.18);
+  color: var(--text);
+  box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.35) inset;
+}
+
 .leads-head {
   display: flex;
   align-items: center;
