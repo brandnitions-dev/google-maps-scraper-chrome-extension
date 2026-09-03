@@ -82,6 +82,14 @@
             </button>
           </div>
           <p class="leads-hint" id="enrichTargetHint">Using local API at http://127.0.0.1:18765 (no key).</p>
+          <div id="startLocalServerRow" class="native-start-row">
+            <button type="button" class="btn native-start" id="startLocalServerBtn" title="Start the local email enrich API on this PC (http://127.0.0.1:18765)">
+              Start local server
+            </button>
+            <p class="leads-hint" style="margin: 6px 0 0">
+              Starts the Python API on this PC. Chrome may ask to open <span class="mono-hint">GmapsAgent Enrich</span> — allow it.
+            </p>
+          </div>
           <div id="remoteEnrichFields">
             <div class="field-label">Online API URL <span class="hint">(kept when you switch to Local)</span></div>
             <input type="text" id="enrichApiBaseUrl" class="control" spellcheck="false" autocomplete="off" placeholder="http://YOUR_IP:31876" />
@@ -111,15 +119,15 @@
           </p>
           <div id="localEnrichServerPanelBlock">
             <div class="native-start-row">
-              <button type="button" class="btn native-start" id="startEnrichServerNativeBtn" title="Opens start_enrich_server.bat via Native Messaging (one-time host registration)">
-                Start enrich server (automatic)
+              <button type="button" class="btn native-start" id="startEnrichServerNativeBtn" title="Same as Start local server above">
+                Start local server
               </button>
             </div>
             <div class="how-to-start" id="howToStartServer">
               <div class="how-to-title">How to start the server (local only)</div>
               <ol class="how-to-steps">
-                <li>Run <span class="mono-hint">setup.bat</span> once in <span class="mono-hint">GmapsAgent\EmailEnricher</span>.</li>
-                <li>Double-click <span class="mono-hint">start_enrich_server.bat</span> in that folder (or use Copy path below).</li>
+                <li>Run <span class="mono-hint">setup.bat</span> once in <span class="mono-hint">GmapsAgent\EmailEnricher</span> (registers the Start button protocol).</li>
+                <li>Click <strong>Start local server</strong> in this sidebar, or double-click <span class="mono-hint">start_enrich_server.bat</span>.</li>
               </ol>
               <div class="saved-folder-line" id="savedEnrichFolderLine">Saved folder: …</div>
               <div class="how-to-actions">

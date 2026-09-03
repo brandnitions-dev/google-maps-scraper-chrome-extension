@@ -200,6 +200,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
+  if (message?.action === "START_LOCAL_ENRICH_SERVER") {
+    (async () => {
+      const host = "com.gmapsagent.enrich";
+      try {
+        const r = await fetch("http://127.0.0.1:18765/health", { method: "GET", cache: "no-store" });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j && j.ok === true) {
+          sendResponse({ ok: true, already_running: true, via: "health" });
+          return;
+        }
+      } catch (_) {
+        /* not up yet */
+      }
+
+      const native = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendNativeMessage(host, { cmd: "start_server" }, (response) => {
+            const err = chrome.runtime.lastError;
+            if (err) resolve({ ok: false, error: err.message });
+            else resolve(response && typeof response === "object" ? response : { ok: false });
+          });
+        } catch (e) {
+          resolve({ ok: false, error: String(e?.message || e) });
+        }
+      });
+      if (native.ok) {
+        sendResponse({ ok: true, via: "native", ...native });
+        return;
+      }
+
+      let protocolOk = false;
+      let protocolError = "";
+      try {
+        const tab = await chrome.tabs.create({ url: "gmapsagent-enrich://start", active: false });
+        protocolOk = true;
+        if (tab?.id) {
+          const tabId = tab.id;
+          setTimeout(() => {
+            chrome.tabs.remove(tabId).catch(() => {});
+          }, 2500);
+        }
+      } catch (e) {
+        protocolError = String(e?.message || e);
+      }
+      sendResponse({
+        ok: protocolOk,
+        via: "protocol",
+        needProtocolClick: true,
+        nativeError: native.error || "",
+        error: protocolOk ? "" : protocolError || native.error || "start_failed",
+      });
+    })();
+    return true;
+  }
   return false;
 });
 

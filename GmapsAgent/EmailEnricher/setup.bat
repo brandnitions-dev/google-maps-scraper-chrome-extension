@@ -138,6 +138,16 @@ echo   Next step:         Double-click run.bat
 echo                     ^(or: .venv\Scripts\python.exe -m email_enricher^)
 echo  ============================================================
 echo.
+echo  [i] Registering gmapsagent-enrich:// so the extension Start local server button works ...
+if exist "%~dp0register_start_protocol.bat" (
+  call "%~dp0register_start_protocol.bat"
+  if errorlevel 1 (
+    echo  [WARN] Could not register Start button protocol. Run register_start_protocol.bat later.
+  ) else (
+    echo  [ok] Start button protocol registered.
+  )
+)
+echo.
 pause
 exit /b 0
 

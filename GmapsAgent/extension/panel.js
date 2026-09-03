@@ -173,6 +173,8 @@ function updateLocalEnrichServerPanelVisibility(targetOverride) {
     const local = target !== "remote";
     if (block) block.hidden = !local;
     if (note) note.hidden = local;
+    const startRow = $("startLocalServerRow");
+    if (startRow) startRow.hidden = !local;
     setPanelEnrichTarget(local ? "local" : "remote");
   };
   if (targetOverride === "local" || targetOverride === "remote") {
@@ -1024,56 +1026,132 @@ if (refreshEnrichHealthBtn) {
   });
 }
 
-const startEnrichServerNativeBtn = $("startEnrichServerNativeBtn");
-if (startEnrichServerNativeBtn) {
-  startEnrichServerNativeBtn.addEventListener("click", () => {
-    const btn = startEnrichServerNativeBtn;
-    btn.disabled = true;
-    appendLog({ level: "info", message: "Starting enrich server via Native Messaging…", ts: Date.now() });
-    chrome.runtime.sendNativeMessage(NATIVE_MESSAGING_HOST, { cmd: "start_server" }, (response) => {
-      btn.disabled = false;
-      const err = chrome.runtime.lastError;
-      if (err) {
-        const msg = err.message || "";
-        if (isNativeMessagingHostMissing(msg)) {
-          appendLog({
-            level: "error",
-            message:
-              'Native Messaging host not found ("Specified native messaging host not found"): HKCU Chrome registration missing/incorrect manifest path — or Chromium rejected manifest (allowed_origins must match chrome-extension://<id>/ with no *).',
-            detail: nativeHostSetupHint({ includeMismatchNote: true }),
-            ts: Date.now(),
-          });
-        } else {
-          appendLog({ level: "error", message: msg || "sendNativeMessage failed.", ts: Date.now() });
-        }
-        return;
-      }
-      if (!response || response.ok !== true) {
-        const detail =
-          (response && (response.stderr_hint || response.error)) || (response && JSON.stringify(response)) || "empty response";
+function openLocalEnrichProtocolLink() {
+  const a = document.createElement("a");
+  a.href = "gmapsagent-enrich://start";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function startLocalEnrichServerFromPanel() {
+  const btns = [$("startLocalServerBtn"), $("startEnrichServerNativeBtn")].filter(Boolean);
+  btns.forEach((b) => {
+    b.disabled = true;
+  });
+  appendLog({ level: "info", message: "Starting local enrich server…", ts: Date.now() });
+
+  const finish = () => {
+    btns.forEach((b) => {
+      b.disabled = false;
+    });
+  };
+
+  const pollUntilUp = async (startedVia) => {
+    for (let i = 0; i < 14; i += 1) {
+      await new Promise((r) => setTimeout(r, 700));
+      const h = await enricherHealthViaBackground(DEFAULT_ENRICH_BASE);
+      if (h.ok && h.json && h.json.ok === true) {
         appendLog({
-          level: "error",
-          message: "Native host did not start the enrich server.",
-          detail: typeof detail === "string" ? detail : String(detail),
+          level: "info",
+          message: `Local enrich server is up @ ${DEFAULT_ENRICH_BASE}${startedVia ? ` (${startedVia})` : ""}`,
           ts: Date.now(),
         });
+        await checkEnrichServerHealth();
+        return true;
+      }
+    }
+    return false;
+  };
+
+  (async () => {
+    try {
+      const already = await enricherHealthViaBackground(DEFAULT_ENRICH_BASE);
+      if (already.ok && already.json && already.json.ok === true) {
+        appendLog({
+          level: "info",
+          message: `Local server already running @ ${DEFAULT_ENRICH_BASE}`,
+          ts: Date.now(),
+        });
+        await checkEnrichServerHealth();
         return;
       }
-      const bits = [];
-      if (response.already_running) bits.push("already running");
-      else if (response.started) bits.push("launched console");
-      if (response.server_up) bits.push("/health OK");
-      else if (response.warning) bits.push(response.warning);
+
+      const res = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage({ action: "START_LOCAL_ENRICH_SERVER" }, (r) => {
+            const le = chrome.runtime.lastError;
+            resolve(le ? { ok: false, error: le.message } : r && typeof r === "object" ? r : { ok: false });
+          });
+        } catch (e) {
+          resolve({ ok: false, error: String(e?.message || e) });
+        }
+      });
+
+      if (res.already_running) {
+        appendLog({
+          level: "info",
+          message: `Local server already running @ ${DEFAULT_ENRICH_BASE}`,
+          ts: Date.now(),
+        });
+        await checkEnrichServerHealth();
+        return;
+      }
+
+      if (res.via === "native" && res.ok) {
+        const bits = [];
+        if (res.already_running) bits.push("already running");
+        else if (res.started) bits.push("launched console");
+        if (res.server_up) bits.push("/health OK");
+        appendLog({
+          level: "info",
+          message: `Native host: ${bits.join(" · ") || "ok"}`,
+          ts: Date.now(),
+        });
+        if (res.server_up || (await pollUntilUp("native"))) return;
+      }
+
+      if (res.needProtocolClick || res.via === "protocol" || !res.ok) {
+        appendLog({
+          level: "info",
+          message: "Opening gmapsagent-enrich://start — allow Chrome’s “Open GmapsAgent Enrich” prompt if it appears.",
+          ts: Date.now(),
+        });
+        openLocalEnrichProtocolLink();
+      }
+
+      const up = await pollUntilUp(res.via || "protocol");
+      if (up) return;
+
       appendLog({
-        level: "info",
-        message: `Native host: ${bits.join(" · ") || "ok"}`,
+        level: "error",
+        message: "Local enrich server did not come up after Start.",
+        detail: [
+          res.nativeError || res.error || "",
+          "If Chrome asked to open GmapsAgent Enrich, click Open / Allow.",
+          `Or double-click: GmapsAgent\\EmailEnricher\\start_enrich_server.bat`,
+          "Then click Check server.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
         ts: Date.now(),
       });
-      setTimeout(() => {
-        checkEnrichServerHealth();
-      }, 1200);
-    });
-  });
+      await checkEnrichServerHealth();
+    } finally {
+      finish();
+    }
+  })();
+}
+
+const startLocalServerBtn = $("startLocalServerBtn");
+if (startLocalServerBtn) {
+  startLocalServerBtn.addEventListener("click", () => startLocalEnrichServerFromPanel());
+}
+
+const startEnrichServerNativeBtn = $("startEnrichServerNativeBtn");
+if (startEnrichServerNativeBtn) {
+  startEnrichServerNativeBtn.addEventListener("click", () => startLocalEnrichServerFromPanel());
 }
 
 $("startBtn").addEventListener("click", async () => {
