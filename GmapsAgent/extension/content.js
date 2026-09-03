@@ -1256,14 +1256,82 @@ async function loadBatchFromPayload(payload) {
       keywords: pack.keywords,
       limit: pack.limit,
       getAll: !!pack.getAll,
+      autoEnrich: !!pack.autoEnrich,
     };
   }
-  const { keywords, limit, getAll } = payload || {};
-  return { keywords: keywords || [], limit, getAll: !!getAll };
+  const { keywords, limit, getAll, autoEnrich } = payload || {};
+  return { keywords: keywords || [], limit, getAll: !!getAll, autoEnrich: !!autoEnrich };
+}
+
+let enrichAutoWait = null;
+
+function waitForAutoEnrich(timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      if (enrichAutoWait === finish) enrichAutoWait = null;
+      resolve(result || { ok: false });
+    };
+    enrichAutoWait = finish;
+    const timer = setTimeout(() => finish({ ok: false, timeout: true }), timeoutMs);
+    const poll = setInterval(() => {
+      isStopped().then((stopped) => {
+        if (stopped) finish({ ok: false, stopped: true });
+      });
+    }, 1000);
+  });
+}
+
+function packKeywordRowsForEnrich(rows) {
+  return rows.map((r) => ({
+    search_query: r.search_query || "",
+    title: r.title || "",
+    address: r.address || "",
+    phone: r.phone || "",
+    website_url: r.website_url || "",
+    sessionIndex: sessionLeads.indexOf(r),
+  }));
+}
+
+async function autoEnrichThenPrepareDownload(rows, keyword, progress) {
+  if (!rows.length) return { ok: true, empty: true, stopped: false };
+  postToPanel({
+    type: "BATCH_PROGRESS",
+    current: progress.current,
+    total: progress.total,
+    keyword,
+    leads: sessionLeads.length,
+    phase: "enrich",
+  });
+  debugLog("info", "Auto-enrich before CSV download…", { keyword, rows: rows.length });
+  postToPanel({
+    type: "ENRICH_AUTO_REQUEST",
+    rows: packKeywordRowsForEnrich(rows),
+    keyword,
+  });
+  const timeoutMs = Math.min(30 * 60 * 1000, 90000 + rows.length * 45000);
+  const result = await waitForAutoEnrich(timeoutMs);
+  if (result.timeout) {
+    debugLog("warn", "Auto-enrich timed out — downloading this search as-is, then next query.", { keyword });
+  } else if (result.stopped) {
+    debugLog("warn", "Stopped during auto-enrich.", { keyword });
+  } else if (!result.ok) {
+    debugLog("warn", "Auto-enrich did not finish cleanly — downloading this search, then next query.", {
+      keyword,
+      error: result.error || "",
+    });
+  } else {
+    debugLog("info", "Auto-enrich finished — downloading CSV, then next search.", { keyword });
+  }
+  return result;
 }
 
 async function runBatch(payload) {
-  const { keywords, limit, getAll } = await loadBatchFromPayload(payload);
+  const { keywords, limit, getAll, autoEnrich } = await loadBatchFromPayload(payload);
   await chrome.runtime.sendMessage({ action: "CLEAR_STOP" });
   // Signal background to start keep-alive alarm
   try { await chrome.runtime.sendMessage({ action: "BATCH_STARTED" }); } catch (_) {}
@@ -1275,6 +1343,7 @@ async function runBatch(payload) {
     keywords: keywords.length,
     getAll,
     limit: getAll ? null : limit,
+    autoEnrich,
     preview: keywords.slice(0, 5),
   });
   if (typeof document !== "undefined" && document.hidden) {
@@ -1299,7 +1368,14 @@ async function runBatch(payload) {
       }
       const kw = keywords[i];
       debugLog("info", `Starting keyword ${i + 1}/${keywords.length}`, kw);
-      postToPanel({ type: "BATCH_PROGRESS", current: i + 1, total: keywords.length, keyword: kw, leads: sessionLeads.length });
+      postToPanel({
+        type: "BATCH_PROGRESS",
+        current: i + 1,
+        total: keywords.length,
+        keyword: kw,
+        leads: sessionLeads.length,
+        phase: "scraping",
+      });
 
       // Inter-keyword delay: let Maps settle after previous keyword finished
       if (i > 0) {
@@ -1318,6 +1394,19 @@ async function runBatch(payload) {
         continue;
       }
 
+      let stoppedDuringEnrich = false;
+      if (autoEnrich && rows.length) {
+        if (await isStopped()) {
+          debugLog("warn", "Stopped before auto-enrich.", { keyword: kw });
+        } else {
+          const enrichRes = await autoEnrichThenPrepareDownload(rows, kw, {
+            current: i + 1,
+            total: keywords.length,
+          });
+          stoppedDuringEnrich = !!enrichRes.stopped;
+        }
+      }
+
       await new Promise((resolve) => {
         chrome.runtime.sendMessage(
           { action: "KEYWORD_DONE", keyword: kw, rows: rows.map(stripInternalLeadFields) },
@@ -1329,9 +1418,14 @@ async function runBatch(payload) {
       debugLog("info", `Session total: ${sessionLeads.length} leads. Moving to next keyword…`);
 
       if (rows.length) {
-        debugLog("info", `CSV queued for download`, { keyword: kw, rows: rows.length });
+        debugLog("info", `CSV queued for download`, { keyword: kw, rows: rows.length, autoEnrich });
       } else {
         debugLog("warn", `No rows collected — CSV skipped`, { keyword: kw });
+      }
+
+      if (stoppedDuringEnrich || (await isStopped())) {
+        debugLog("warn", "Stopped after this keyword — not starting the next search.", { index: i });
+        break;
       }
     }
     postToPanel({ type: "BATCH_DONE", ok: true });
@@ -1470,14 +1564,22 @@ function installUiBridge() {
     }
 
     if (d.type === "ENRICH_REQUEST") {
-      const rows = sessionLeads.map(stripInternalLeadFields).map((r) => ({
+      const rows = sessionLeads.map((r, sessionIndex) => ({
         search_query: r.search_query || "",
         title: r.title || "",
         address: r.address || "",
         phone: r.phone || "",
         website_url: r.website_url || "",
+        sessionIndex,
       }));
       postToPanel({ type: "ENRICH_PAYLOAD", rows });
+      return;
+    }
+
+    if (d.type === "ENRICH_AUTO_DONE") {
+      if (typeof enrichAutoWait === "function") {
+        enrichAutoWait({ ok: !!d.ok, error: d.error || "", empty: !!d.empty });
+      }
       return;
     }
 

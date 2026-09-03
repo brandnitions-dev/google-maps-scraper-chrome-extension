@@ -4,6 +4,7 @@ const DEFAULT_ENRICH_BASE = "http://127.0.0.1:18765";
 const STORAGE_ENRICH_BASE = "enrichApiBaseUrl";
 const STORAGE_ENRICH_KEY = "enrichApiKey";
 const STORAGE_ENRICH_TARGET = "enrichApiTarget";
+const STORAGE_AUTO_ENRICH = "autoEnrichEmails";
 
 /** Must match EmailEnricher `email_enricher.local_server.DEFAULT_PORT` (18765) when local. */
 const NATIVE_MESSAGING_HOST = "com.gmapsagent.enrich";
@@ -69,6 +70,19 @@ function setPanelEnrichTarget(target) {
       ? `Using local API at ${DEFAULT_ENRICH_BASE} (no key). Online URL stays saved.`
       : "Using the Online / VPS URL below. Switch to Local if that host is down.";
   }
+}
+
+function loadAutoEnrichToggle() {
+  chrome.storage.sync.get([STORAGE_AUTO_ENRICH], (r) => {
+    const el = $("autoEnrich");
+    if (el) el.checked = !!r[STORAGE_AUTO_ENRICH];
+  });
+}
+
+function persistAutoEnrichToggle() {
+  const el = $("autoEnrich");
+  if (!el) return;
+  chrome.storage.sync.set({ [STORAGE_AUTO_ENRICH]: !!el.checked });
 }
 
 function persistEnrichTarget(target) {
@@ -665,7 +679,7 @@ async function runEnrichStream(rows) {
         detail: `Allow this extension to access ${host}. Use “Save enrich remote” or approve the permission prompt. ${perm.err || perm.reason || ""}`,
         ts: Date.now(),
       });
-      return;
+      return false;
     }
     appendLog({
       level: "info",
@@ -698,7 +712,10 @@ async function runEnrichStream(rows) {
     const onMsg = (msg) => {
       if (!msg || typeof msg !== "object") return;
       if (msg.type === "ROW" && typeof msg.index === "number") {
-        postToParent({ type: "ENRICH_ROW", index: msg.index, email: msg.email != null ? String(msg.email) : "" });
+        const src = rows[msg.index];
+        const sessionIndex =
+          src && typeof src.sessionIndex === "number" && src.sessionIndex >= 0 ? src.sessionIndex : msg.index;
+        postToParent({ type: "ENRICH_ROW", index: sessionIndex, email: msg.email != null ? String(msg.email) : "" });
         if (msg.error) {
           appendLog({
             level: "warn",
@@ -773,6 +790,7 @@ async function runEnrichStream(rows) {
       finish();
     }
     });
+    return sawDone;
   } finally {
     setEnrichRunning(false);
     checkEnrichServerHealth();
@@ -1035,7 +1053,7 @@ function openLocalEnrichProtocolLink() {
   a.remove();
 }
 
-function startLocalEnrichServerFromPanel() {
+async function startLocalEnrichServerFromPanel() {
   const btns = [$("startLocalServerBtn"), $("startEnrichServerNativeBtn")].filter(Boolean);
   btns.forEach((b) => {
     b.disabled = true;
@@ -1065,83 +1083,82 @@ function startLocalEnrichServerFromPanel() {
     return false;
   };
 
-  (async () => {
-    try {
-      const already = await enricherHealthViaBackground(DEFAULT_ENRICH_BASE);
-      if (already.ok && already.json && already.json.ok === true) {
-        appendLog({
-          level: "info",
-          message: `Local server already running @ ${DEFAULT_ENRICH_BASE}`,
-          ts: Date.now(),
-        });
-        await checkEnrichServerHealth();
-        return;
-      }
-
-      const res = await new Promise((resolve) => {
-        try {
-          chrome.runtime.sendMessage({ action: "START_LOCAL_ENRICH_SERVER" }, (r) => {
-            const le = chrome.runtime.lastError;
-            resolve(le ? { ok: false, error: le.message } : r && typeof r === "object" ? r : { ok: false });
-          });
-        } catch (e) {
-          resolve({ ok: false, error: String(e?.message || e) });
-        }
-      });
-
-      if (res.already_running) {
-        appendLog({
-          level: "info",
-          message: `Local server already running @ ${DEFAULT_ENRICH_BASE}`,
-          ts: Date.now(),
-        });
-        await checkEnrichServerHealth();
-        return;
-      }
-
-      if (res.via === "native" && res.ok) {
-        const bits = [];
-        if (res.already_running) bits.push("already running");
-        else if (res.started) bits.push("launched console");
-        if (res.server_up) bits.push("/health OK");
-        appendLog({
-          level: "info",
-          message: `Native host: ${bits.join(" · ") || "ok"}`,
-          ts: Date.now(),
-        });
-        if (res.server_up || (await pollUntilUp("native"))) return;
-      }
-
-      if (res.needProtocolClick || res.via === "protocol" || !res.ok) {
-        appendLog({
-          level: "info",
-          message: "Opening gmapsagent-enrich://start — allow Chrome’s “Open GmapsAgent Enrich” prompt if it appears.",
-          ts: Date.now(),
-        });
-        openLocalEnrichProtocolLink();
-      }
-
-      const up = await pollUntilUp(res.via || "protocol");
-      if (up) return;
-
+  try {
+    const already = await enricherHealthViaBackground(DEFAULT_ENRICH_BASE);
+    if (already.ok && already.json && already.json.ok === true) {
       appendLog({
-        level: "error",
-        message: "Local enrich server did not come up after Start.",
-        detail: [
-          res.nativeError || res.error || "",
-          "If Chrome asked to open GmapsAgent Enrich, click Open / Allow.",
-          `Or double-click: GmapsAgent\\EmailEnricher\\start_enrich_server.bat`,
-          "Then click Check server.",
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        level: "info",
+        message: `Local server already running @ ${DEFAULT_ENRICH_BASE}`,
         ts: Date.now(),
       });
       await checkEnrichServerHealth();
-    } finally {
-      finish();
+      return true;
     }
-  })();
+
+    const res = await new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ action: "START_LOCAL_ENRICH_SERVER" }, (r) => {
+          const le = chrome.runtime.lastError;
+          resolve(le ? { ok: false, error: le.message } : r && typeof r === "object" ? r : { ok: false });
+        });
+      } catch (e) {
+        resolve({ ok: false, error: String(e?.message || e) });
+      }
+    });
+
+    if (res.already_running) {
+      appendLog({
+        level: "info",
+        message: `Local server already running @ ${DEFAULT_ENRICH_BASE}`,
+        ts: Date.now(),
+      });
+      await checkEnrichServerHealth();
+      return true;
+    }
+
+    if (res.via === "native" && res.ok) {
+      const bits = [];
+      if (res.already_running) bits.push("already running");
+      else if (res.started) bits.push("launched console");
+      if (res.server_up) bits.push("/health OK");
+      appendLog({
+        level: "info",
+        message: `Native host: ${bits.join(" · ") || "ok"}`,
+        ts: Date.now(),
+      });
+      if (res.server_up || (await pollUntilUp("native"))) return true;
+    }
+
+    if (res.needProtocolClick || res.via === "protocol" || !res.ok) {
+      appendLog({
+        level: "info",
+        message: "Opening gmapsagent-enrich://start — allow Chrome’s “Open GmapsAgent Enrich” prompt if it appears.",
+        ts: Date.now(),
+      });
+      openLocalEnrichProtocolLink();
+    }
+
+    const up = await pollUntilUp(res.via || "protocol");
+    if (up) return true;
+
+    appendLog({
+      level: "error",
+      message: "Local enrich server did not come up after Start.",
+      detail: [
+        res.nativeError || res.error || "",
+        "If Chrome asked to open GmapsAgent Enrich, click Open / Allow.",
+        `Or double-click: GmapsAgent\\EmailEnricher\\start_enrich_server.bat`,
+        "Then click Check server.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      ts: Date.now(),
+    });
+    await checkEnrichServerHealth();
+    return false;
+  } finally {
+    finish();
+  }
 }
 
 const startLocalServerBtn = $("startLocalServerBtn");
@@ -1203,7 +1220,7 @@ $("startBtn").addEventListener("click", async () => {
   await acquireBatchWakeLock();
   appendLog({
     level: "info",
-    message: `Queue started · ${keywords.length} keyword(s) · getAll=${getAll} · limit=${getAll ? "n/a" : limit}`,
+    message: `Queue started · ${keywords.length} keyword(s) · getAll=${getAll} · limit=${getAll ? "n/a" : limit} · autoEnrich=${!!$("autoEnrich")?.checked}`,
     ts: Date.now(),
   });
 
@@ -1215,6 +1232,7 @@ $("startBtn").addEventListener("click", async () => {
             keywords,
             limit: getAll ? null : limit,
             getAll,
+            autoEnrich: !!$("autoEnrich")?.checked,
           },
         },
         () => {
@@ -1269,7 +1287,8 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (d.type === "BATCH_PROGRESS") {
-    const prog = `Keyword ${d.current}/${d.total} · ${d.leads || 0} leads`;
+    const phase = d.phase === "enrich" ? "enriching" : "scraping";
+    const prog = `Keyword ${d.current}/${d.total} · ${d.leads || 0} leads · ${phase}`;
     $("leadsCount").textContent = prog;
     // Update document title so it's visible in the tab bar even when backgrounded
     try { document.title = `[${d.current}/${d.total}] Maps Scraper`; } catch (_) {}
@@ -1283,7 +1302,9 @@ window.addEventListener("message", (event) => {
       message:
         d.ok === false
           ? `Batch ended with error: ${d.error || "unknown"}`
-          : "Batch finished. Per-keyword CSVs were saved to Downloads; use Export session CSV for one combined file.",
+          : $("autoEnrich")?.checked
+            ? "Batch finished. Each search was enriched (when the server was up) and its CSV downloaded; use Export session CSV for one combined file."
+            : "Batch finished. Per-keyword CSVs were saved to Downloads; use Export session CSV for one combined file.",
       detail: d.error,
       ts: Date.now(),
     });
@@ -1310,7 +1331,48 @@ window.addEventListener("message", (event) => {
     }
     refreshSavedFolderFromStorage();
     applyEnrichRemoteInputsFromStorage();
+    loadAutoEnrichToggle();
     checkEnrichServerHealth();
+  }
+  if (d.type === "ENRICH_AUTO_REQUEST") {
+    const rows = Array.isArray(d.rows) ? d.rows : [];
+    const keyword = d.keyword != null ? String(d.keyword) : "";
+    (async () => {
+      if (!rows.length) {
+        postToParent({ type: "ENRICH_AUTO_DONE", ok: true, empty: true, keyword });
+        return;
+      }
+      appendLog({
+        level: "info",
+        message: `Auto-enrich ${rows.length} row(s) for “${keyword}”…`,
+        ts: Date.now(),
+      });
+      let up = await checkEnrichServerHealth();
+      if (!up) {
+        const { target } = await getEffectiveEnrichBaseAndKey();
+        if (target === "local") {
+          appendLog({
+            level: "warn",
+            message: "Auto-enrich: local server down — trying Start local server…",
+            ts: Date.now(),
+          });
+          await startLocalEnrichServerFromPanel();
+          up = await checkEnrichServerHealth();
+        }
+      }
+      if (!up) {
+        appendLog({
+          level: "warn",
+          message: "Auto-enrich skipped — enrich server unreachable. Downloading this search without emails, then next query.",
+          ts: Date.now(),
+        });
+        postToParent({ type: "ENRICH_AUTO_DONE", ok: false, error: "server_down", keyword });
+        return;
+      }
+      const finished = await runEnrichStream(rows);
+      postToParent({ type: "ENRICH_AUTO_DONE", ok: !!finished, keyword });
+    })();
+    return;
   }
   if (d.type === "ENRICH_PAYLOAD") {
     const rows = Array.isArray(d.rows) ? d.rows : [];
@@ -1358,7 +1420,13 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+const autoEnrichEl = $("autoEnrich");
+if (autoEnrichEl) {
+  autoEnrichEl.addEventListener("change", () => persistAutoEnrichToggle());
+}
+
 postToParent({ type: "PANEL_READY" });
 refreshSavedFolderFromStorage();
 applyEnrichRemoteInputsFromStorage();
+loadAutoEnrichToggle();
 checkEnrichServerHealth();

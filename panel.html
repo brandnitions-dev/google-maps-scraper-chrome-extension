@@ -57,6 +57,14 @@
             <input type="checkbox" id="getAll" />
             <span>GET ALL — scroll until end of list (ignores max)</span>
           </label>
+          <label class="check">
+            <input type="checkbox" id="autoEnrich" />
+            <span>Auto-enrich emails — then download CSV, then next search</span>
+          </label>
+          <p class="leads-hint" id="autoEnrichHint">
+            When on, each finished search waits for email enrich, downloads that keyword’s CSV, then the queue continues.
+            Start the local (or online) enrich server first.
+          </p>
           <p class="leads-hint" id="batchBackgroundHint">
             Bulk tip: Chrome slows this tab when it is in the background or the window is minimized. Leave the Maps tab
             focused for fastest runs; we still try to keep the screen awake while a batch is running.
@@ -138,7 +146,7 @@
             </div>
           </div>
           <p class="leads-hint">
-            Live table for this run (spec fields). Use export anytime — includes partial data after Stop. Per-keyword CSVs still download automatically when each search finishes.
+            Live table for this run (spec fields). Use export anytime — includes partial data after Stop. Per-keyword CSVs download when each search finishes (after enrich if Auto-enrich is on).
             Use <strong>Enrich emails</strong> for streamed fill-in (<span class="mono-hint">GET /health</span>, <span class="mono-hint">POST /v1/enrich</span>).
           </p>
           <div class="leads-toolbar">
