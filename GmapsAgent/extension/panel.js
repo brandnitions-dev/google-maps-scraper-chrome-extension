@@ -5,6 +5,7 @@ const STORAGE_ENRICH_BASE = "enrichApiBaseUrl";
 const STORAGE_ENRICH_KEY = "enrichApiKey";
 const STORAGE_ENRICH_TARGET = "enrichApiTarget";
 const STORAGE_AUTO_ENRICH = "autoEnrichEmails";
+const STORAGE_COMBINE_BATCH = "combineBatchCsv";
 
 /** Must match EmailEnricher `email_enricher.local_server.DEFAULT_PORT` (18765) when local. */
 const NATIVE_MESSAGING_HOST = "com.gmapsagent.enrich";
@@ -83,6 +84,26 @@ function persistAutoEnrichToggle() {
   const el = $("autoEnrich");
   if (!el) return;
   chrome.storage.sync.set({ [STORAGE_AUTO_ENRICH]: !!el.checked });
+}
+
+function loadCombineBatchToggle() {
+  chrome.storage.sync.get([STORAGE_COMBINE_BATCH], (r) => {
+    const el = $("combineBatchCsv");
+    if (el) el.checked = !!r[STORAGE_COMBINE_BATCH];
+  });
+}
+
+function persistCombineBatchToggle() {
+  const el = $("combineBatchCsv");
+  if (!el) return;
+  chrome.storage.sync.set({ [STORAGE_COMBINE_BATCH]: !!el.checked });
+}
+
+function updateCombineBatchVisibility() {
+  const box = $("combineBatchBox");
+  if (!box) return;
+  const mode = $("mode")?.value;
+  box.hidden = mode !== "paste" && mode !== "file";
 }
 
 function persistEnrichTarget(target) {
@@ -504,6 +525,7 @@ $("mode").addEventListener("change", () => {
   $("fileBox").hidden = mode !== "file";
   const hint = $("batchFileLineHint");
   if (hint && mode !== "file") hint.textContent = "";
+  updateCombineBatchVisibility();
 });
 
 $("clearLog").addEventListener("click", () => {
@@ -1220,7 +1242,7 @@ $("startBtn").addEventListener("click", async () => {
   await acquireBatchWakeLock();
   appendLog({
     level: "info",
-    message: `Queue started · ${keywords.length} keyword(s) · getAll=${getAll} · limit=${getAll ? "n/a" : limit} · autoEnrich=${!!$("autoEnrich")?.checked}`,
+    message: `Queue started · ${keywords.length} keyword(s) · getAll=${getAll} · limit=${getAll ? "n/a" : limit} · autoEnrich=${!!$("autoEnrich")?.checked} · oneCsv=${!!$("combineBatchCsv")?.checked && ($("mode")?.value === "paste" || $("mode")?.value === "file")}`,
     ts: Date.now(),
   });
 
@@ -1233,6 +1255,8 @@ $("startBtn").addEventListener("click", async () => {
             limit: getAll ? null : limit,
             getAll,
             autoEnrich: !!$("autoEnrich")?.checked,
+            combineBatchCsv:
+              !!$("combineBatchCsv")?.checked && ($("mode")?.value === "paste" || $("mode")?.value === "file"),
           },
         },
         () => {
@@ -1287,7 +1311,8 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (d.type === "BATCH_PROGRESS") {
-    const phase = d.phase === "enrich" ? "enriching" : "scraping";
+    const phase =
+      d.phase === "enrich-all" ? "enriching all" : d.phase === "enrich" ? "enriching" : "scraping";
     const prog = `Keyword ${d.current}/${d.total} · ${d.leads || 0} leads · ${phase}`;
     $("leadsCount").textContent = prog;
     // Update document title so it's visible in the tab bar even when backgrounded
@@ -1302,9 +1327,11 @@ window.addEventListener("message", (event) => {
       message:
         d.ok === false
           ? `Batch ended with error: ${d.error || "unknown"}`
-          : $("autoEnrich")?.checked
-            ? "Batch finished. Each search was enriched (when the server was up) and its CSV downloaded; use Export session CSV for one combined file."
-            : "Batch finished. Per-keyword CSVs were saved to Downloads; use Export session CSV for one combined file.",
+          : d.combinedCsv
+            ? "Batch finished. All searches were collected, then enriched, then one combined CSV was downloaded."
+            : $("autoEnrich")?.checked
+              ? "Batch finished. Each search was enriched (when the server was up) and its CSV downloaded; use Export session CSV for one combined file."
+              : "Batch finished. Per-keyword CSVs were saved to Downloads; use Export session CSV for one combined file.",
       detail: d.error,
       ts: Date.now(),
     });
@@ -1332,6 +1359,8 @@ window.addEventListener("message", (event) => {
     refreshSavedFolderFromStorage();
     applyEnrichRemoteInputsFromStorage();
     loadAutoEnrichToggle();
+    loadCombineBatchToggle();
+    updateCombineBatchVisibility();
     checkEnrichServerHealth();
   }
   if (d.type === "ENRICH_AUTO_REQUEST") {
@@ -1424,9 +1453,15 @@ const autoEnrichEl = $("autoEnrich");
 if (autoEnrichEl) {
   autoEnrichEl.addEventListener("change", () => persistAutoEnrichToggle());
 }
+const combineBatchEl = $("combineBatchCsv");
+if (combineBatchEl) {
+  combineBatchEl.addEventListener("change", () => persistCombineBatchToggle());
+}
 
 postToParent({ type: "PANEL_READY" });
 refreshSavedFolderFromStorage();
 applyEnrichRemoteInputsFromStorage();
 loadAutoEnrichToggle();
+loadCombineBatchToggle();
+updateCombineBatchVisibility();
 checkEnrichServerHealth();

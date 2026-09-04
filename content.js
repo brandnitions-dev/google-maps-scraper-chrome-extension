@@ -1257,10 +1257,17 @@ async function loadBatchFromPayload(payload) {
       limit: pack.limit,
       getAll: !!pack.getAll,
       autoEnrich: !!pack.autoEnrich,
+      combineBatchCsv: !!pack.combineBatchCsv,
     };
   }
-  const { keywords, limit, getAll, autoEnrich } = payload || {};
-  return { keywords: keywords || [], limit, getAll: !!getAll, autoEnrich: !!autoEnrich };
+  const { keywords, limit, getAll, autoEnrich, combineBatchCsv } = payload || {};
+  return {
+    keywords: keywords || [],
+    limit,
+    getAll: !!getAll,
+    autoEnrich: !!autoEnrich,
+    combineBatchCsv: !!combineBatchCsv,
+  };
 }
 
 let enrichAutoWait = null;
@@ -1297,6 +1304,33 @@ function packKeywordRowsForEnrich(rows) {
   }));
 }
 
+function downloadSessionCsvOnce(filename) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      {
+        action: "DOWNLOAD_SESSION_CSV",
+        rows: sessionLeads.map(stripInternalLeadFields),
+        filename: filename || "maps_combined",
+      },
+      (res) => {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          debugLog("error", err.message || "Combined CSV download failed.");
+          resolve({ ok: false, error: err.message });
+          return;
+        }
+        if (res?.ok) {
+          debugLog("info", `Combined CSV downloaded (${sessionLeads.length} rows).`);
+          resolve({ ok: true });
+          return;
+        }
+        debugLog("warn", `Combined CSV skipped: ${res?.error || "unknown"}`);
+        resolve({ ok: false, error: res?.error || "unknown" });
+      }
+    );
+  });
+}
+
 async function autoEnrichThenPrepareDownload(rows, keyword, progress) {
   if (!rows.length) return { ok: true, empty: true, stopped: false };
   postToPanel({
@@ -1305,7 +1339,7 @@ async function autoEnrichThenPrepareDownload(rows, keyword, progress) {
     total: progress.total,
     keyword,
     leads: sessionLeads.length,
-    phase: "enrich",
+    phase: progress.phase || "enrich",
   });
   debugLog("info", "Auto-enrich before CSV download…", { keyword, rows: rows.length });
   postToPanel({
@@ -1331,7 +1365,7 @@ async function autoEnrichThenPrepareDownload(rows, keyword, progress) {
 }
 
 async function runBatch(payload) {
-  const { keywords, limit, getAll, autoEnrich } = await loadBatchFromPayload(payload);
+  const { keywords, limit, getAll, autoEnrich, combineBatchCsv } = await loadBatchFromPayload(payload);
   await chrome.runtime.sendMessage({ action: "CLEAR_STOP" });
   // Signal background to start keep-alive alarm
   try { await chrome.runtime.sendMessage({ action: "BATCH_STARTED" }); } catch (_) {}
@@ -1344,6 +1378,7 @@ async function runBatch(payload) {
     getAll,
     limit: getAll ? null : limit,
     autoEnrich,
+    combineBatchCsv,
     preview: keywords.slice(0, 5),
   });
   if (typeof document !== "undefined" && document.hidden) {
@@ -1388,14 +1423,16 @@ async function runBatch(payload) {
         rows = await scrapeOneKeyword(kw, { limit, getAll });
       } catch (e) {
         debugLog("error", `Keyword failed: ${e?.message || e}`, { keyword: kw });
-        await new Promise((resolve) => {
-          chrome.runtime.sendMessage({ action: "KEYWORD_DONE", keyword: kw, rows: [] }, () => resolve());
-        });
+        if (!combineBatchCsv) {
+          await new Promise((resolve) => {
+            chrome.runtime.sendMessage({ action: "KEYWORD_DONE", keyword: kw, rows: [] }, () => resolve());
+          });
+        }
         continue;
       }
 
       let stoppedDuringEnrich = false;
-      if (autoEnrich && rows.length) {
+      if (autoEnrich && !combineBatchCsv && rows.length) {
         if (await isStopped()) {
           debugLog("warn", "Stopped before auto-enrich.", { keyword: kw });
         } else {
@@ -1407,28 +1444,52 @@ async function runBatch(payload) {
         }
       }
 
-      await new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { action: "KEYWORD_DONE", keyword: kw, rows: rows.map(stripInternalLeadFields) },
-          () => resolve()
-        );
-      });
+      if (!combineBatchCsv) {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            { action: "KEYWORD_DONE", keyword: kw, rows: rows.map(stripInternalLeadFields) },
+            () => resolve()
+          );
+        });
+        if (rows.length) {
+          debugLog("info", `CSV queued for download`, { keyword: kw, rows: rows.length, autoEnrich });
+        } else {
+          debugLog("warn", `No rows collected — CSV skipped`, { keyword: kw });
+        }
+      } else {
+        debugLog("info", `Combined mode: holding rows until all searches finish`, {
+          keyword: kw,
+          rows: rows.length,
+          session: sessionLeads.length,
+        });
+      }
 
       debugLog("info", `Finished keyword ${i + 1}/${keywords.length}`, { keyword: kw, rows: rows.length });
       debugLog("info", `Session total: ${sessionLeads.length} leads. Moving to next keyword…`);
-
-      if (rows.length) {
-        debugLog("info", `CSV queued for download`, { keyword: kw, rows: rows.length, autoEnrich });
-      } else {
-        debugLog("warn", `No rows collected — CSV skipped`, { keyword: kw });
-      }
 
       if (stoppedDuringEnrich || (await isStopped())) {
         debugLog("warn", "Stopped after this keyword — not starting the next search.", { index: i });
         break;
       }
     }
-    postToPanel({ type: "BATCH_DONE", ok: true });
+
+    if (combineBatchCsv && sessionLeads.length) {
+      if (!(await isStopped())) {
+        debugLog("info", "All searches collected — enriching the full table, then one CSV.", {
+          rows: sessionLeads.length,
+        });
+        await autoEnrichThenPrepareDownload(sessionLeads, "all searches", {
+          current: keywords.length,
+          total: keywords.length,
+          phase: "enrich-all",
+        });
+      } else {
+        debugLog("warn", "Stopped before combined enrich — downloading collected rows as-is.");
+      }
+      await downloadSessionCsvOnce("maps_combined");
+    }
+
+    postToPanel({ type: "BATCH_DONE", ok: true, combinedCsv: !!combineBatchCsv });
   } catch (e) {
     debugLog("error", `Batch crashed: ${e?.message || e}`);
     postToPanel({ type: "BATCH_DONE", ok: false, error: String(e?.message || e) });
