@@ -7,6 +7,10 @@ const STORAGE_ENRICH_TARGET = "enrichApiTarget";
 const STORAGE_AUTO_ENRICH = "autoEnrichEmails";
 const STORAGE_COMBINE_BATCH = "combineBatchCsv";
 const STORAGE_MAPS_REFRESH = "mapsRefreshEvery3";
+const STORAGE_KEYWORD_MODE = "keywordSourceMode";
+const STORAGE_LAST_LIMIT = "lastSearchLimit";
+const STORAGE_LAST_GET_ALL = "lastGetAll";
+const PANEL_FORM_PREFIX = "gms_panel_form_v1_";
 
 /** Must match EmailEnricher `email_enricher.local_server.DEFAULT_PORT` (18765) when local. */
 const NATIVE_MESSAGING_HOST = "com.gmapsagent.enrich";
@@ -20,6 +24,107 @@ let mapsTabId = 0;
 
 function batchQueueStorageKey() {
   return BATCH_QUEUE_PREFIX + String(mapsTabId || 0);
+}
+
+function panelFormStorageKey() {
+  return PANEL_FORM_PREFIX + String(mapsTabId || 0);
+}
+
+function normalizeKeywordMode(mode) {
+  if (mode === "paste" || mode === "file") return mode;
+  return "single";
+}
+
+function applyKeywordSourceMode(mode) {
+  const m = normalizeKeywordMode(mode);
+  const el = $("mode");
+  if (el) el.value = m;
+  const singleBox = $("singleBox");
+  const pasteBox = $("pasteBox");
+  const fileBox = $("fileBox");
+  if (singleBox) singleBox.hidden = m !== "single";
+  if (pasteBox) pasteBox.hidden = m !== "paste";
+  if (fileBox) fileBox.hidden = m !== "file";
+  const hint = $("batchFileLineHint");
+  if (hint && m !== "file") hint.textContent = "";
+  updateCombineBatchVisibility();
+}
+
+function collectFormUi(keywords) {
+  const mode = normalizeKeywordMode($("mode")?.value);
+  const lines = Array.isArray(keywords) ? keywords.filter((k) => String(k || "").trim()) : null;
+  return {
+    mode,
+    keyword: $("keyword")?.value || "",
+    batchPaste: $("batchPaste")?.value || (lines && mode !== "single" ? lines.join("\n") : ""),
+    limit: $("limit")?.value || "",
+    getAll: !!$("getAll")?.checked,
+  };
+}
+
+function applyFormUi(ui, keywords) {
+  if (!ui && !Array.isArray(keywords)) return;
+  const lines = Array.isArray(keywords)
+    ? keywords.map((k) => String(k || "").trim()).filter(Boolean)
+    : [];
+  let mode = normalizeKeywordMode(ui?.mode);
+  if (mode === "file") {
+    mode = "paste";
+    const hint = $("batchFileLineHint");
+    if (hint) hint.textContent = "Imported list restored after refresh (file picker cannot survive a reload).";
+  }
+  if (lines.length > 1) mode = "paste";
+  applyKeywordSourceMode(mode);
+  if (mode === "single") {
+    if ($("keyword")) $("keyword").value = lines[0] || ui?.keyword || "";
+  } else if ($("batchPaste")) {
+    $("batchPaste").value = lines.length ? lines.join("\n") : ui?.batchPaste || "";
+  }
+  if (ui && $("limit") && ui.limit != null) $("limit").value = String(ui.limit);
+  if (ui && $("getAll") && typeof ui.getAll === "boolean") $("getAll").checked = ui.getAll;
+}
+
+function persistKeywordSourceSync() {
+  const mode = normalizeKeywordMode($("mode")?.value);
+  chrome.storage.sync.set({
+    [STORAGE_KEYWORD_MODE]: mode,
+    [STORAGE_LAST_LIMIT]: $("limit")?.value || "",
+    [STORAGE_LAST_GET_ALL]: !!$("getAll")?.checked,
+  });
+}
+
+let persistPanelFormTimer = 0;
+
+function persistPanelForm(keywords) {
+  persistKeywordSourceSync();
+  if (!mapsTabId) return;
+  const ui = collectFormUi(keywords);
+  chrome.storage.local.set({ [panelFormStorageKey()]: ui });
+}
+
+function persistPanelFormSoon() {
+  clearTimeout(persistPanelFormTimer);
+  persistPanelFormTimer = setTimeout(() => persistPanelForm(), 250);
+}
+
+function loadKeywordSourceFromSync() {
+  chrome.storage.sync.get([STORAGE_KEYWORD_MODE, STORAGE_LAST_LIMIT, STORAGE_LAST_GET_ALL], (r) => {
+    if (r[STORAGE_KEYWORD_MODE]) applyKeywordSourceMode(r[STORAGE_KEYWORD_MODE]);
+    if (r[STORAGE_LAST_LIMIT] != null && $("limit") && !$("limit").value) {
+      $("limit").value = String(r[STORAGE_LAST_LIMIT]);
+    }
+    if (typeof r[STORAGE_LAST_GET_ALL] === "boolean" && $("getAll")) {
+      $("getAll").checked = r[STORAGE_LAST_GET_ALL];
+    }
+  });
+}
+
+function loadPanelFormForTab() {
+  if (!mapsTabId) return;
+  chrome.storage.local.get([panelFormStorageKey()], (r) => {
+    const ui = r[panelFormStorageKey()];
+    if (ui && typeof ui === "object") applyFormUi(ui);
+  });
 }
 
 let batchScreenWakeLock = null;
@@ -539,13 +644,8 @@ $("rail").addEventListener("click", () => {
 });
 
 $("mode").addEventListener("change", () => {
-  const mode = $("mode").value;
-  $("singleBox").hidden = mode !== "single";
-  $("pasteBox").hidden = mode !== "paste";
-  $("fileBox").hidden = mode !== "file";
-  const hint = $("batchFileLineHint");
-  if (hint && mode !== "file") hint.textContent = "";
-  updateCombineBatchVisibility();
+  applyKeywordSourceMode($("mode").value);
+  persistPanelForm();
 });
 
 $("clearLog").addEventListener("click", () => {
@@ -1267,6 +1367,7 @@ $("startBtn").addEventListener("click", async () => {
     });
   }
 
+  persistPanelForm(keywords);
   setRunning(true);
   await acquireBatchWakeLock();
   appendLog({
@@ -1287,6 +1388,7 @@ $("startBtn").addEventListener("click", async () => {
             combineBatchCsv:
               !!$("combineBatchCsv")?.checked && ($("mode")?.value === "paste" || $("mode")?.value === "file"),
             mapsRefreshEvery: $("mapsRefreshEvery3")?.checked ? 3 : 0,
+            ui: collectFormUi(keywords),
           },
         },
         () => {
@@ -1352,9 +1454,14 @@ window.addEventListener("message", (event) => {
   if (d.type === "BATCH_RESUMED") {
     setRunning(true);
     acquireBatchWakeLock().catch(() => {});
+    const ui = d.ui && typeof d.ui === "object" ? { ...d.ui } : {};
+    if (d.getAll != null) ui.getAll = !!d.getAll;
+    if (d.limit != null) ui.limit = d.getAll ? "" : String(d.limit);
+    applyFormUi(ui, Array.isArray(d.keywords) ? d.keywords : null);
+    persistPanelForm(Array.isArray(d.keywords) ? d.keywords : null);
     appendLog({
       level: "info",
-      message: `Resumed after Maps refresh · continuing search ${d.current}/${d.total} · ${d.leads || 0} lead(s) restored`,
+      message: `Resumed after Maps refresh · continuing search ${d.current}/${d.total} · ${d.leads || 0} lead(s) restored · keyword source restored`,
       detail: d.reason ? String(d.reason) : "",
       ts: Date.now(),
     });
@@ -1391,6 +1498,7 @@ window.addEventListener("message", (event) => {
   if (d.type === "INIT_STATE") {
     if (d.mapsPageOrigin && typeof d.mapsPageOrigin === "string") window.__gmsMapsPageOrigin = d.mapsPageOrigin;
     if (d.tabId) mapsTabId = Number(d.tabId) || mapsTabId;
+    loadPanelFormForTab();
     $("verbose").checked = d.verbose !== false;
     if (d.minimized) showShell(false);
     else showShell(true);
@@ -1504,6 +1612,7 @@ if (combineBatchEl) {
 postToParent({ type: "PANEL_READY" });
 refreshSavedFolderFromStorage();
 applyEnrichRemoteInputsFromStorage();
+loadKeywordSourceFromSync();
 loadAutoEnrichToggle();
 loadCombineBatchToggle();
 loadMapsRefreshToggle();
@@ -1512,4 +1621,14 @@ checkEnrichServerHealth();
 const mapsRefreshEl = $("mapsRefreshEvery3");
 if (mapsRefreshEl) {
   mapsRefreshEl.addEventListener("change", () => persistMapsRefreshToggle());
+}
+["keyword", "batchPaste", "limit"].forEach((id) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("change", () => persistPanelForm());
+  el.addEventListener("input", () => persistPanelFormSoon());
+});
+const getAllEl = $("getAll");
+if (getAllEl) {
+  getAllEl.addEventListener("change", () => persistPanelForm());
 }

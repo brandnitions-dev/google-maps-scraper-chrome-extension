@@ -1126,6 +1126,7 @@ async function persistCheckpoint(extra = {}) {
     autoEnrich: !!batchOpts.autoEnrich,
     combineBatchCsv: !!batchOpts.combineBatchCsv,
     mapsRefreshEvery: refreshEveryN,
+    ui: batchOpts.ui || null,
     nextIndex: currentKeywordIndex,
     sessionLeads: serializeLeads(sessionLeads),
     refreshEveryN,
@@ -1487,6 +1488,7 @@ async function loadBatchFromPayload(payload) {
       autoEnrich: !!pack.autoEnrich,
       combineBatchCsv: !!pack.combineBatchCsv,
       mapsRefreshEvery: Number(pack.mapsRefreshEvery) || 0,
+      ui: pack.ui && typeof pack.ui === "object" ? pack.ui : null,
     };
   }
   if (payload && payload.fromResume) {
@@ -1497,11 +1499,12 @@ async function loadBatchFromPayload(payload) {
       autoEnrich: !!payload.autoEnrich,
       combineBatchCsv: !!payload.combineBatchCsv,
       mapsRefreshEvery: Number(payload.mapsRefreshEvery) || 0,
+      ui: payload.ui && typeof payload.ui === "object" ? payload.ui : null,
       fromResume: true,
       resumeNextIndex: Number(payload.resumeNextIndex) || 0,
     };
   }
-  const { keywords, limit, getAll, autoEnrich, combineBatchCsv, mapsRefreshEvery } = payload || {};
+  const { keywords, limit, getAll, autoEnrich, combineBatchCsv, mapsRefreshEvery, ui } = payload || {};
   return {
     keywords: keywords || [],
     limit,
@@ -1509,6 +1512,7 @@ async function loadBatchFromPayload(payload) {
     autoEnrich: !!autoEnrich,
     combineBatchCsv: !!combineBatchCsv,
     mapsRefreshEvery: Number(mapsRefreshEvery) || 0,
+    ui: ui && typeof ui === "object" ? ui : null,
   };
 }
 
@@ -1608,7 +1612,7 @@ async function autoEnrichThenPrepareDownload(rows, keyword, progress) {
 
 async function runBatch(payload) {
   const loaded = await loadBatchFromPayload(payload);
-  const { keywords, limit, getAll, autoEnrich, combineBatchCsv, mapsRefreshEvery } = loaded;
+  const { keywords, limit, getAll, autoEnrich, combineBatchCsv, mapsRefreshEvery, ui } = loaded;
   const fromResume = !!loaded.fromResume;
   const startIndex = fromResume ? Math.max(0, loaded.resumeNextIndex || 0) : 0;
 
@@ -1619,7 +1623,7 @@ async function runBatch(payload) {
     await clearResumePack();
   }
 
-  batchOpts = { keywords, limit, getAll, autoEnrich, combineBatchCsv };
+  batchOpts = { keywords, limit, getAll, autoEnrich, combineBatchCsv, ui: ui || null };
   refreshEveryN = Number(mapsRefreshEvery) > 0 ? Number(mapsRefreshEvery) : 0;
   completedSinceRefresh = fromResume ? 0 : 0;
   plannedReload = false;
@@ -1834,6 +1838,10 @@ async function tryResumeSavedBatch() {
     total: pack.keywords.length,
     leads: sessionLeads.length,
     reason: pack.reason || "resume",
+    keywords: pack.keywords,
+    limit: pack.limit,
+    getAll: !!pack.getAll,
+    ui: pack.ui || null,
   });
 
   try {
@@ -1852,6 +1860,7 @@ async function tryResumeSavedBatch() {
       autoEnrich: pack.autoEnrich,
       combineBatchCsv: pack.combineBatchCsv,
       mapsRefreshEvery: pack.mapsRefreshEvery || pack.refreshEveryN || 0,
+      ui: pack.ui || null,
       resumeNextIndex: nextIndex,
     });
   } catch (e) {
