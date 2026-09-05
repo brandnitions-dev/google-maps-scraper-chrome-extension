@@ -4,20 +4,51 @@ const STORAGE_MIN = "gms_minimized";
 const STORAGE_VERBOSE = "gms_verbose";
 
 /**
- * Chunked waits: when the Maps tab is in the background, Chrome clamps long single timeouts;
- * smaller slices still run slower but advance more reliably than one huge setTimeout.
+ * Chunked waits that the service-worker PING can unstick.
+ * Background/minimized Maps tabs get timer clamping; a ping re-arms overdue sleeps
+ * so the scrape loop keeps advancing instead of sitting on a 30–60s clamp.
  */
+const sleepHandles = new Set();
+
 function sleep(ms) {
-  const total = Math.max(0, ms);
-  const end = Date.now() + total;
-  return (async () => {
-    while (Date.now() < end) {
-      const left = end - Date.now();
-      if (left <= 0) break;
-      const slice = Math.min(document.hidden ? 500 : 900, left);
-      await new Promise((r) => setTimeout(r, slice));
+  const end = Date.now() + Math.max(0, ms);
+  return new Promise((resolve) => {
+    const handle = { end, timer: 0, done: false };
+    const finish = () => {
+      if (handle.done) return;
+      handle.done = true;
+      clearTimeout(handle.timer);
+      sleepHandles.delete(handle);
+      resolve();
+    };
+    const arm = () => {
+      if (handle.done) return;
+      const left = handle.end - Date.now();
+      if (left <= 0) {
+        finish();
+        return;
+      }
+      const slice = Math.min(document.hidden ? 350 : 800, left);
+      handle.timer = setTimeout(arm, slice);
+    };
+    handle.finish = finish;
+    handle.arm = arm;
+    sleepHandles.add(handle);
+    arm();
+  });
+}
+
+function nudgeSleeps() {
+  const now = Date.now();
+  for (const handle of [...sleepHandles]) {
+    if (handle.done) continue;
+    if (now >= handle.end) {
+      handle.finish();
+      continue;
     }
-  })();
+    clearTimeout(handle.timer);
+    handle.arm();
+  }
 }
 
 function extOrigin() {
@@ -43,6 +74,84 @@ let hostEl = null;
 let batchRunning = false;
 /** All rows collected in this Maps tab since last “Start queue” (survives Stop). */
 let sessionLeads = [];
+
+const BATCH_RESUME_PREFIX = "gms_batch_resume_v1_";
+const BATCH_QUEUE_PREFIX = "gms_batch_v1_";
+const DEFAULT_REFRESH_EVERY = 3;
+const FREEZE_MS = 120000;
+const RESUME_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+let batchPhase = "idle";
+let lastProgressAt = 0;
+let freezeWatchTimer = null;
+let plannedReload = false;
+let currentKeywordIndex = 0;
+let batchOpts = null;
+let completedSinceRefresh = 0;
+let refreshEveryN = DEFAULT_REFRESH_EVERY;
+let resumeKickoffStarted = false;
+let myTabId = 0;
+let tabKeepAliveAudio = null;
+
+function batchQueueKey(tabId) {
+  return BATCH_QUEUE_PREFIX + String(tabId || myTabId || "0");
+}
+
+function resumeKey(tabId) {
+  return BATCH_RESUME_PREFIX + String(tabId || myTabId || "0");
+}
+
+function getMyTabId() {
+  return new Promise((resolve) => {
+    if (myTabId) {
+      resolve(myTabId);
+      return;
+    }
+    chrome.runtime.sendMessage({ action: "GET_TAB_ID" }, (res) => {
+      myTabId = Number(res?.tabId) || 0;
+      resolve(myTabId);
+    });
+  });
+}
+
+function startTabKeepAliveAudio() {
+  if (tabKeepAliveAudio) {
+    try {
+      tabKeepAliveAudio.ctx?.resume?.();
+    } catch (_) {}
+    return;
+  }
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.00008;
+    osc.frequency.value = 27.5;
+    osc.type = "sine";
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    ctx.resume?.();
+    tabKeepAliveAudio = { ctx, osc };
+  } catch (_) {}
+}
+
+function stopTabKeepAliveAudio() {
+  try {
+    tabKeepAliveAudio?.osc?.stop();
+    tabKeepAliveAudio?.ctx?.close();
+  } catch (_) {}
+  tabKeepAliveAudio = null;
+}
+
+function checkFreezeFromWatchdog() {
+  if (plannedReload || batchPhase !== "scraping") return;
+  if (!lastProgressAt || Date.now() - lastProgressAt < FREEZE_MS) return;
+  debugLog("warn", "Maps looks frozen (no new listings for 2 minutes) — saving leads and refreshing…");
+  requestMapsRefresh("freeze", { retryCurrent: true }).catch(() => {});
+}
 
 async function isStopped() {
   return new Promise((resolve) => {
@@ -945,6 +1054,123 @@ function stripInternalLeadFields(row) {
   return rest;
 }
 
+function serializeLeads(leads) {
+  return (leads || []).map((r) => ({
+    search_query: r.search_query || "",
+    title: r.title || "",
+    address: r.address || "",
+    phone: r.phone || "",
+    website_url: r.website_url || "",
+    email: r.email || "",
+    _dupKeys: r._dupKeys instanceof Set ? [...r._dupKeys] : Array.isArray(r._dupKeys) ? r._dupKeys : [],
+  }));
+}
+
+function hydrateLead(raw) {
+  const keys = raw && raw._dupKeys;
+  return {
+    search_query: (raw && raw.search_query) || "",
+    title: (raw && raw.title) || "",
+    address: (raw && raw.address) || "",
+    phone: (raw && raw.phone) || "",
+    website_url: (raw && raw.website_url) || "",
+    email: (raw && raw.email) || "",
+    _dupKeys: new Set(Array.isArray(keys) ? keys : []),
+  };
+}
+
+function storageSet(obj) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(obj, () => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message));
+      else resolve();
+    });
+  });
+}
+
+function storageGet(keys) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(keys, (r) => resolve(r || {}));
+  });
+}
+
+function storageRemove(keys) {
+  return new Promise((resolve) => {
+    chrome.storage.local.remove(keys, () => resolve());
+  });
+}
+
+function markProgress() {
+  lastProgressAt = Date.now();
+}
+
+function stopFreezeWatch() {
+  if (freezeWatchTimer) {
+    clearInterval(freezeWatchTimer);
+    freezeWatchTimer = null;
+  }
+}
+
+function startFreezeWatch() {
+  stopFreezeWatch();
+  freezeWatchTimer = setInterval(() => checkFreezeFromWatchdog(), 15000);
+}
+
+async function persistCheckpoint(extra = {}) {
+  if (!batchOpts) return;
+  const pack = {
+    keywords: batchOpts.keywords,
+    limit: batchOpts.limit,
+    getAll: !!batchOpts.getAll,
+    autoEnrich: !!batchOpts.autoEnrich,
+    combineBatchCsv: !!batchOpts.combineBatchCsv,
+    mapsRefreshEvery: refreshEveryN,
+    nextIndex: currentKeywordIndex,
+    sessionLeads: serializeLeads(sessionLeads),
+    refreshEveryN,
+    savedAt: Date.now(),
+    pending: false,
+    ...extra,
+  };
+  try {
+    await getMyTabId();
+    await storageSet({ [resumeKey()]: pack });
+  } catch (e) {
+    debugLog("warn", "Could not checkpoint leads to storage.", String(e?.message || e));
+  }
+}
+
+async function clearResumePack() {
+  try {
+    await getMyTabId();
+    await storageRemove(resumeKey());
+  } catch (_) {}
+}
+
+async function requestMapsRefresh(reason, { retryCurrent } = {}) {
+  if (plannedReload) return;
+  plannedReload = true;
+  stopFreezeWatch();
+  const nextIndex = retryCurrent ? currentKeywordIndex : currentKeywordIndex + 1;
+  debugLog("info", `Saving ${sessionLeads.length} lead(s) and refreshing Maps (${reason}). Will continue at search ${nextIndex + 1}.`);
+  await persistCheckpoint({ nextIndex, pending: true, reason: String(reason || "refresh") });
+  await sleep(400);
+  window.location.href = "https://www.google.com/maps";
+}
+
+function replaySessionLeadsToPanel() {
+  postToPanel({ type: "LEADS_RESET" });
+  sessionLeads.forEach((row, i) => {
+    postToPanel({
+      type: "LEADS_UPDATE",
+      count: sessionLeads.length,
+      sessionIndex: i,
+      row: stripInternalLeadFields(row),
+    });
+  });
+}
+
 function inferredKeysFromStoredRow(row) {
   const s = new Set();
   const d = phoneDigits(row.phone || "");
@@ -1055,7 +1281,7 @@ async function scrapeOneKeyword(keyword, opts) {
   }
 
   while (true) {
-    if (await isStopped()) return rows;
+    if (plannedReload || (await isStopped())) return rows;
 
     feed = queryFeedNow() || feed;
     if (!feed) {
@@ -1067,7 +1293,7 @@ async function scrapeOneKeyword(keyword, opts) {
     const articles = Array.from(feed.querySelectorAll('div[role="article"]'));
 
     for (const article of articles) {
-      if (await isStopped()) break;
+      if (plannedReload || (await isStopped())) break;
 
       const link = article.querySelector('a.hfpxzc');
       if (!link || !link.href) continue;
@@ -1153,9 +1379,11 @@ async function scrapeOneKeyword(keyword, opts) {
       // Restore scroll position so we continue from where we left off
       if (feed) await restoreFeedScroll(feed, scrollBefore);
 
+      markProgress();
       // Keep-alive ping every 5 listings
       if (processedHrefs.size % 5 === 0) {
         try { chrome.runtime.sendMessage({ action: "KEEPALIVE" }); } catch (_) {}
+        persistCheckpoint().catch(() => {});
       }
 
       if (!getAll && limit && rows.length >= limit) {
@@ -1242,13 +1470,13 @@ async function scrapeOneKeyword(keyword, opts) {
   return rows;
 }
 
-const BATCH_SESSION_KEY = "gms_batch_v1";
-
 async function loadBatchFromPayload(payload) {
   if (payload && (payload.fromStoredBatch || payload.fromSession)) {
-    const got = await chrome.storage.local.get(BATCH_SESSION_KEY);
-    const pack = got[BATCH_SESSION_KEY];
-    await chrome.storage.local.remove(BATCH_SESSION_KEY);
+    const tabId = await getMyTabId();
+    const key = payload.batchStorageKey || batchQueueKey(tabId);
+    const got = await chrome.storage.local.get(key);
+    const pack = got[key];
+    await chrome.storage.local.remove(key);
     if (!pack || !Array.isArray(pack.keywords)) {
       throw new Error("Batch queue missing from storage — click Start again.");
     }
@@ -1258,15 +1486,29 @@ async function loadBatchFromPayload(payload) {
       getAll: !!pack.getAll,
       autoEnrich: !!pack.autoEnrich,
       combineBatchCsv: !!pack.combineBatchCsv,
+      mapsRefreshEvery: Number(pack.mapsRefreshEvery) || 0,
     };
   }
-  const { keywords, limit, getAll, autoEnrich, combineBatchCsv } = payload || {};
+  if (payload && payload.fromResume) {
+    return {
+      keywords: payload.keywords || [],
+      limit: payload.limit,
+      getAll: !!payload.getAll,
+      autoEnrich: !!payload.autoEnrich,
+      combineBatchCsv: !!payload.combineBatchCsv,
+      mapsRefreshEvery: Number(payload.mapsRefreshEvery) || 0,
+      fromResume: true,
+      resumeNextIndex: Number(payload.resumeNextIndex) || 0,
+    };
+  }
+  const { keywords, limit, getAll, autoEnrich, combineBatchCsv, mapsRefreshEvery } = payload || {};
   return {
     keywords: keywords || [],
     limit,
     getAll: !!getAll,
     autoEnrich: !!autoEnrich,
     combineBatchCsv: !!combineBatchCsv,
+    mapsRefreshEvery: Number(mapsRefreshEvery) || 0,
   };
 }
 
@@ -1365,38 +1607,61 @@ async function autoEnrichThenPrepareDownload(rows, keyword, progress) {
 }
 
 async function runBatch(payload) {
-  const { keywords, limit, getAll, autoEnrich, combineBatchCsv } = await loadBatchFromPayload(payload);
-  await chrome.runtime.sendMessage({ action: "CLEAR_STOP" });
-  // Signal background to start keep-alive alarm
-  try { await chrome.runtime.sendMessage({ action: "BATCH_STARTED" }); } catch (_) {}
+  const loaded = await loadBatchFromPayload(payload);
+  const { keywords, limit, getAll, autoEnrich, combineBatchCsv, mapsRefreshEvery } = loaded;
+  const fromResume = !!loaded.fromResume;
+  const startIndex = fromResume ? Math.max(0, loaded.resumeNextIndex || 0) : 0;
 
-  sessionLeads = [];
-  postToPanel({ type: "LEADS_RESET" });
+  await chrome.runtime.sendMessage({ action: "CLEAR_STOP" });
+  if (!fromResume) {
+    sessionLeads = [];
+    postToPanel({ type: "LEADS_RESET" });
+    await clearResumePack();
+  }
+
+  batchOpts = { keywords, limit, getAll, autoEnrich, combineBatchCsv };
+  refreshEveryN = Number(mapsRefreshEvery) > 0 ? Number(mapsRefreshEvery) : 0;
+  completedSinceRefresh = fromResume ? 0 : 0;
+  plannedReload = false;
+  batchPhase = "scraping";
+  markProgress();
+  startTabKeepAliveAudio();
+  startFreezeWatch();
+
+  // Signal background to start keep-alive alarm (this tab only; other tabs keep running)
+  try { await chrome.runtime.sendMessage({ action: "BATCH_STARTED" }); } catch (_) {}
 
   debugLog("info", "Batch configuration", {
     keywords: keywords.length,
+    startIndex: startIndex + 1,
+    fromResume,
     getAll,
     limit: getAll ? null : limit,
     autoEnrich,
     combineBatchCsv,
+    refreshEvery: refreshEveryN,
+    savedLeads: sessionLeads.length,
+    tabId: myTabId,
     preview: keywords.slice(0, 5),
   });
-  if (typeof document !== "undefined" && document.hidden) {
-    debugLog(
-      "warn",
-      "Maps tab is in the background — Chrome throttles timers; the queue may run slower. Keep this tab focused for fastest bulk runs.",
-      { visibility: document.visibilityState }
-    );
-  }
+  debugLog(
+    "info",
+    "This queue is locked to this Maps tab. Switch, minimize, or run other Maps tabs in parallel — Stop only stops this tab.",
+    { tabId: myTabId, visibility: document.visibilityState }
+  );
 
   if (!keywords.length) {
     debugLog("error", "Batch has no keywords — nothing to run.", {});
+    stopFreezeWatch();
+    batchPhase = "idle";
     postToPanel({ type: "BATCH_DONE", ok: false, error: "no_keywords" });
     return;
   }
 
   try {
-    for (let i = 0; i < keywords.length; i++) {
+    for (let i = startIndex; i < keywords.length; i++) {
+      currentKeywordIndex = i;
+      if (plannedReload) return;
       if (await isStopped()) {
         debugLog("warn", "Stopped before keyword.", { index: i });
         break;
@@ -1413,36 +1678,48 @@ async function runBatch(payload) {
       });
 
       // Inter-keyword delay: let Maps settle after previous keyword finished
-      if (i > 0) {
+      if (i > startIndex) {
         debugLog("debug", "Waiting between keywords for Maps to reset…");
         await sleep(2000);
       }
 
       let rows = [];
       try {
+        batchPhase = "scraping";
+        markProgress();
         rows = await scrapeOneKeyword(kw, { limit, getAll });
       } catch (e) {
+        if (plannedReload) return;
         debugLog("error", `Keyword failed: ${e?.message || e}`, { keyword: kw });
         if (!combineBatchCsv) {
           await new Promise((resolve) => {
             chrome.runtime.sendMessage({ action: "KEYWORD_DONE", keyword: kw, rows: [] }, () => resolve());
           });
         }
+        completedSinceRefresh += 1;
+        await persistCheckpoint({ nextIndex: i + 1, pending: false });
         continue;
       }
+
+      if (plannedReload) return;
 
       let stoppedDuringEnrich = false;
       if (autoEnrich && !combineBatchCsv && rows.length) {
         if (await isStopped()) {
           debugLog("warn", "Stopped before auto-enrich.", { keyword: kw });
         } else {
+          batchPhase = "enrich";
           const enrichRes = await autoEnrichThenPrepareDownload(rows, kw, {
             current: i + 1,
             total: keywords.length,
           });
+          batchPhase = "scraping";
+          markProgress();
           stoppedDuringEnrich = !!enrichRes.stopped;
         }
       }
+
+      if (plannedReload) return;
 
       if (!combineBatchCsv) {
         await new Promise((resolve) => {
@@ -1467,35 +1744,123 @@ async function runBatch(payload) {
       debugLog("info", `Finished keyword ${i + 1}/${keywords.length}`, { keyword: kw, rows: rows.length });
       debugLog("info", `Session total: ${sessionLeads.length} leads. Moving to next keyword…`);
 
+      completedSinceRefresh += 1;
+      await persistCheckpoint({ nextIndex: i + 1, pending: false });
+
       if (stoppedDuringEnrich || (await isStopped())) {
         debugLog("warn", "Stopped after this keyword — not starting the next search.", { index: i });
         break;
       }
+
+      if (refreshEveryN > 0 && completedSinceRefresh >= refreshEveryN && i + 1 < keywords.length) {
+        await requestMapsRefresh("every-" + refreshEveryN, { retryCurrent: false });
+        return;
+      }
     }
+
+    if (plannedReload) return;
 
     if (combineBatchCsv && sessionLeads.length) {
       if (!(await isStopped())) {
         debugLog("info", "All searches collected — enriching the full table, then one CSV.", {
           rows: sessionLeads.length,
         });
+        batchPhase = "enrich";
         await autoEnrichThenPrepareDownload(sessionLeads, "all searches", {
           current: keywords.length,
           total: keywords.length,
           phase: "enrich-all",
         });
+        batchPhase = "scraping";
       } else {
         debugLog("warn", "Stopped before combined enrich — downloading collected rows as-is.");
       }
       await downloadSessionCsvOnce("maps_combined");
     }
 
-    postToPanel({ type: "BATCH_DONE", ok: true, combinedCsv: !!combineBatchCsv });
+    if (!plannedReload) {
+      postToPanel({ type: "BATCH_DONE", ok: true, combinedCsv: !!combineBatchCsv });
+    }
   } catch (e) {
+    if (plannedReload) return;
     debugLog("error", `Batch crashed: ${e?.message || e}`);
     postToPanel({ type: "BATCH_DONE", ok: false, error: String(e?.message || e) });
   } finally {
-    // Signal background to stop keep-alive alarm
-    try { await chrome.runtime.sendMessage({ action: "BATCH_ENDED" }); } catch (_) {}
+    stopFreezeWatch();
+    if (!plannedReload) {
+      batchPhase = "idle";
+      batchOpts = null;
+      stopTabKeepAliveAudio();
+      await clearResumePack();
+      try { await chrome.runtime.sendMessage({ action: "BATCH_ENDED" }); } catch (_) {}
+    }
+  }
+}
+
+async function tryResumeSavedBatch() {
+  if (resumeKickoffStarted || batchRunning) return;
+  const tabId = await getMyTabId();
+  if (!tabId) return;
+  const key = resumeKey(tabId);
+  const got = await storageGet(key);
+  const pack = got[key];
+  if (!pack || !Array.isArray(pack.keywords) || !pack.keywords.length) return;
+  if (pack.aborted) return;
+  const age = Date.now() - (Number(pack.savedAt) || 0);
+  if (age > RESUME_MAX_AGE_MS) {
+    await clearResumePack();
+    return;
+  }
+  const nextIndex = Math.max(0, Number(pack.nextIndex) || 0);
+  if (nextIndex >= pack.keywords.length) {
+    await clearResumePack();
+    return;
+  }
+  if (!pack.pending && age > 30 * 60 * 1000) {
+    return;
+  }
+
+  resumeKickoffStarted = true;
+  batchRunning = true;
+  sessionLeads = (pack.sessionLeads || []).map(hydrateLead);
+  replaySessionLeadsToPanel();
+  debugLog(
+    "info",
+    `Resuming after refresh — ${sessionLeads.length} lead(s) saved, continuing at search ${nextIndex + 1}/${pack.keywords.length}.`
+  );
+  postToPanel({
+    type: "BATCH_RESUMED",
+    current: nextIndex + 1,
+    total: pack.keywords.length,
+    leads: sessionLeads.length,
+    reason: pack.reason || "resume",
+  });
+
+  try {
+    try {
+      await waitForSearchInput(45000);
+    } catch (_) {
+      debugLog("warn", "Maps search box not ready after refresh — waiting a bit more…");
+      await sleep(3000);
+      await waitForSearchInput(30000);
+    }
+    await runBatch({
+      fromResume: true,
+      keywords: pack.keywords,
+      limit: pack.limit,
+      getAll: pack.getAll,
+      autoEnrich: pack.autoEnrich,
+      combineBatchCsv: pack.combineBatchCsv,
+      mapsRefreshEvery: pack.mapsRefreshEvery || pack.refreshEveryN || 0,
+      resumeNextIndex: nextIndex,
+    });
+  } catch (e) {
+    if (!plannedReload) {
+      debugLog("error", `Resume failed: ${e?.message || e}`);
+      postToPanel({ type: "BATCH_DONE", ok: false, error: String(e?.message || e) });
+    }
+  } finally {
+    batchRunning = false;
   }
 }
 
@@ -1513,6 +1878,17 @@ async function loadSidebarPrefs() {
   };
 }
 
+async function postInitState(prefs) {
+  const tabId = await getMyTabId();
+  postToPanel({
+    type: "INIT_STATE",
+    minimized: prefs.minimized,
+    verbose: prefs.verbose,
+    mapsPageOrigin: window.location.origin,
+    tabId,
+  });
+}
+
 async function mountSidebar() {
   document.querySelectorAll("#" + HOST_ID).forEach((node, idx) => {
     if (idx > 0) node.remove();
@@ -1525,12 +1901,7 @@ async function mountSidebar() {
     const prefs = await loadSidebarPrefs();
     if (!prefs.visible) hostEl.style.display = "none";
     applyHostWidth(prefs.minimized);
-    postToPanel({
-      type: "INIT_STATE",
-      minimized: prefs.minimized,
-      verbose: prefs.verbose,
-      mapsPageOrigin: window.location.origin,
-    });
+    await postInitState(prefs);
     return;
   }
 
@@ -1595,14 +1966,12 @@ function installUiBridge() {
     if (!d || typeof d !== "object") return;
 
     if (d.type === "PANEL_READY") {
-      loadSidebarPrefs().then((p) => {
-        postToPanel({
-          type: "INIT_STATE",
-          minimized: p.minimized,
-          verbose: p.verbose,
-          mapsPageOrigin: window.location.origin,
-        });
+      loadSidebarPrefs().then(async (p) => {
+        await postInitState(p);
         applyHostWidth(p.minimized);
+        tryResumeSavedBatch().catch((e) => {
+          debugLog("warn", "Resume check failed.", String(e?.message || e));
+        });
       });
       return;
     }
@@ -1620,6 +1989,9 @@ function installUiBridge() {
     }
 
     if (d.type === "STOP") {
+      plannedReload = false;
+      stopFreezeWatch();
+      clearResumePack();
       chrome.runtime.sendMessage({ action: "REQUEST_STOP" });
       return;
     }
@@ -1709,6 +2081,7 @@ function installUiBridge() {
 
     if (d.type === "CLEAR_SESSION_LEADS") {
       sessionLeads = [];
+      if (!batchRunning) clearResumePack();
       postToPanel({ type: "LEADS_RESET" });
       postToPanel({
         type: "LOG",
@@ -1753,8 +2126,16 @@ function installUiBridge() {
       return true;
     }
     if (message?.action === "PING") {
-      // Keep-alive ping from background alarm — acknowledge to prevent tab suspension
-      sendResponse({ ok: true, ts: Date.now() });
+      nudgeSleeps();
+      checkFreezeFromWatchdog();
+      if (batchRunning) startTabKeepAliveAudio();
+      sendResponse({
+        ok: true,
+        ts: Date.now(),
+        hidden: document.hidden,
+        batchRunning,
+        tabId: myTabId,
+      });
       return true;
     }
     return false;
@@ -1762,4 +2143,23 @@ function installUiBridge() {
 }
 
 installUiBridge();
+getMyTabId();
 mountSidebar();
+
+let loggedBackgroundRun = false;
+document.addEventListener("visibilitychange", () => {
+  nudgeSleeps();
+  if (!batchRunning) {
+    loggedBackgroundRun = false;
+    return;
+  }
+  if (document.hidden) {
+    if (!loggedBackgroundRun) {
+      loggedBackgroundRun = true;
+      debugLog("info", "This Maps tab is in the background — the queue on this tab keeps running (may be slower).");
+    }
+  } else {
+    loggedBackgroundRun = false;
+    startTabKeepAliveAudio();
+  }
+});

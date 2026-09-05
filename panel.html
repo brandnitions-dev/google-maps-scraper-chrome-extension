@@ -65,6 +65,14 @@
             When on, each finished search waits for email enrich, downloads that keyword’s CSV, then the queue continues.
             Start the local (or online) enrich server first.
           </p>
+          <label class="check">
+            <input type="checkbox" id="mapsRefreshEvery3" checked />
+            <span>Refresh Maps every 3 searches — saves leads, then continues</span>
+          </label>
+          <p class="leads-hint" id="mapsRefreshHint">
+            After every 3 queries the tab reloads so Maps does not freeze. Collected rows stay saved and the queue
+            picks up at the next search. If listings stall for 2 minutes, it refreshes and retries that search too.
+          </p>
           <div id="combineBatchBox" hidden>
             <label class="check">
               <input type="checkbox" id="combineBatchCsv" />
@@ -76,8 +84,8 @@
             </p>
           </div>
           <p class="leads-hint" id="batchBackgroundHint">
-            Bulk tip: Chrome slows this tab when it is in the background or the window is minimized. Leave the Maps tab
-            focused for fastest runs; we still try to keep the screen awake while a batch is running.
+            Each Maps tab is its own session — open several tabs to run queues in parallel. Switching or minimizing
+            keeps this tab’s queue going (a bit slower in the background). Stop only stops this tab.
           </p>
 
           <div class="row-btns">

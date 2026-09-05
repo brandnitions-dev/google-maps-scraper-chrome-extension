@@ -6,14 +6,21 @@ const STORAGE_ENRICH_KEY = "enrichApiKey";
 const STORAGE_ENRICH_TARGET = "enrichApiTarget";
 const STORAGE_AUTO_ENRICH = "autoEnrichEmails";
 const STORAGE_COMBINE_BATCH = "combineBatchCsv";
+const STORAGE_MAPS_REFRESH = "mapsRefreshEvery3";
 
 /** Must match EmailEnricher `email_enricher.local_server.DEFAULT_PORT` (18765) when local. */
 const NATIVE_MESSAGING_HOST = "com.gmapsagent.enrich";
 
 const STORAGE_KEY_EMAIL_ENRICHER_DIR = "emailEnricherDir";
 
-/** Must match content.js `BATCH_SESSION_KEY` — full keyword list stored here (postMessage can drop huge payloads). */
-const BATCH_SESSION_KEY = "gms_batch_v1";
+/** Per-Maps-tab queue key — content.js uses `gms_batch_v1_${tabId}` so parallel tabs do not steal each other. */
+const BATCH_QUEUE_PREFIX = "gms_batch_v1_";
+
+let mapsTabId = 0;
+
+function batchQueueStorageKey() {
+  return BATCH_QUEUE_PREFIX + String(mapsTabId || 0);
+}
 
 let batchScreenWakeLock = null;
 
@@ -97,6 +104,19 @@ function persistCombineBatchToggle() {
   const el = $("combineBatchCsv");
   if (!el) return;
   chrome.storage.sync.set({ [STORAGE_COMBINE_BATCH]: !!el.checked });
+}
+
+function loadMapsRefreshToggle() {
+  chrome.storage.sync.get([STORAGE_MAPS_REFRESH], (r) => {
+    const el = $("mapsRefreshEvery3");
+    if (el) el.checked = r[STORAGE_MAPS_REFRESH] !== false;
+  });
+}
+
+function persistMapsRefreshToggle() {
+  const el = $("mapsRefreshEvery3");
+  if (!el) return;
+  chrome.storage.sync.set({ [STORAGE_MAPS_REFRESH]: !!el.checked });
 }
 
 function updateCombineBatchVisibility() {
@@ -1238,11 +1258,20 @@ $("startBtn").addEventListener("click", async () => {
     return;
   }
 
+  if (!mapsTabId) {
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: "GET_TAB_ID" }, (res) => {
+        mapsTabId = Number(res?.tabId) || 0;
+        resolve();
+      });
+    });
+  }
+
   setRunning(true);
   await acquireBatchWakeLock();
   appendLog({
     level: "info",
-    message: `Queue started · ${keywords.length} keyword(s) · getAll=${getAll} · limit=${getAll ? "n/a" : limit} · autoEnrich=${!!$("autoEnrich")?.checked} · oneCsv=${!!$("combineBatchCsv")?.checked && ($("mode")?.value === "paste" || $("mode")?.value === "file")}`,
+    message: `Queue started on this Maps tab${mapsTabId ? ` (#${mapsTabId})` : ""} · ${keywords.length} keyword(s) · getAll=${getAll} · limit=${getAll ? "n/a" : limit} · autoEnrich=${!!$("autoEnrich")?.checked} · oneCsv=${!!$("combineBatchCsv")?.checked && ($("mode")?.value === "paste" || $("mode")?.value === "file")} · refreshEvery=${$("mapsRefreshEvery3")?.checked ? 3 : 0}`,
     ts: Date.now(),
   });
 
@@ -1250,13 +1279,14 @@ $("startBtn").addEventListener("click", async () => {
     await new Promise((resolve, reject) => {
       chrome.storage.local.set(
         {
-          [BATCH_SESSION_KEY]: {
+          [batchQueueStorageKey()]: {
             keywords,
             limit: getAll ? null : limit,
             getAll,
             autoEnrich: !!$("autoEnrich")?.checked,
             combineBatchCsv:
               !!$("combineBatchCsv")?.checked && ($("mode")?.value === "paste" || $("mode")?.value === "file"),
+            mapsRefreshEvery: $("mapsRefreshEvery3")?.checked ? 3 : 0,
           },
         },
         () => {
@@ -1280,7 +1310,7 @@ $("startBtn").addEventListener("click", async () => {
 
   postToParent({
     type: "RUN_BATCH",
-    payload: { fromStoredBatch: true },
+    payload: { fromStoredBatch: true, batchStorageKey: batchQueueStorageKey() },
   });
 });
 
@@ -1319,6 +1349,17 @@ window.addEventListener("message", (event) => {
     try { document.title = `[${d.current}/${d.total}] Maps Scraper`; } catch (_) {}
     return;
   }
+  if (d.type === "BATCH_RESUMED") {
+    setRunning(true);
+    acquireBatchWakeLock().catch(() => {});
+    appendLog({
+      level: "info",
+      message: `Resumed after Maps refresh · continuing search ${d.current}/${d.total} · ${d.leads || 0} lead(s) restored`,
+      detail: d.reason ? String(d.reason) : "",
+      ts: Date.now(),
+    });
+    return;
+  }
   if (d.type === "BATCH_DONE") {
     setRunning(false);
     releaseBatchWakeLock().catch(() => {});
@@ -1349,6 +1390,7 @@ window.addEventListener("message", (event) => {
   }
   if (d.type === "INIT_STATE") {
     if (d.mapsPageOrigin && typeof d.mapsPageOrigin === "string") window.__gmsMapsPageOrigin = d.mapsPageOrigin;
+    if (d.tabId) mapsTabId = Number(d.tabId) || mapsTabId;
     $("verbose").checked = d.verbose !== false;
     if (d.minimized) showShell(false);
     else showShell(true);
@@ -1360,6 +1402,7 @@ window.addEventListener("message", (event) => {
     applyEnrichRemoteInputsFromStorage();
     loadAutoEnrichToggle();
     loadCombineBatchToggle();
+    loadMapsRefreshToggle();
     updateCombineBatchVisibility();
     checkEnrichServerHealth();
   }
@@ -1463,5 +1506,10 @@ refreshSavedFolderFromStorage();
 applyEnrichRemoteInputsFromStorage();
 loadAutoEnrichToggle();
 loadCombineBatchToggle();
+loadMapsRefreshToggle();
 updateCombineBatchVisibility();
 checkEnrichServerHealth();
+const mapsRefreshEl = $("mapsRefreshEvery3");
+if (mapsRefreshEl) {
+  mapsRefreshEl.addEventListener("change", () => persistMapsRefreshToggle());
+}

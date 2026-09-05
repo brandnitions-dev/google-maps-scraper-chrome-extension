@@ -1,9 +1,82 @@
-const STOP_KEY = "scrapeStopRequested";
+const STOP_KEY_PREFIX = "gms_stop_";
+const BATCH_TABS_KEY = "gms_batch_tab_ids";
+const LEGACY_STOP_KEY = "scrapeStopRequested";
 const BATCH_ACTIVE_KEY = "gms_batch_active";
 
-/** Keep-alive alarm: fires every 25s while a batch is running to prevent tab suspension. */
+/** Keep-alive alarm: pings every running Maps tab so background/minimized queues keep moving. */
 const KEEPALIVE_ALARM = "gms_keepalive";
-let batchTabId = null;
+
+function stopStorageKey(tabId) {
+  return STOP_KEY_PREFIX + String(tabId);
+}
+
+async function readBatchTabIds() {
+  const got = await chrome.storage.local.get(BATCH_TABS_KEY);
+  const raw = got[BATCH_TABS_KEY];
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.map((n) => Number(n)).filter((n) => n > 0))];
+}
+
+async function writeBatchTabIds(ids) {
+  const uniq = [...new Set(ids.map((n) => Number(n)).filter((n) => n > 0))];
+  await chrome.storage.local.set({
+    [BATCH_TABS_KEY]: uniq,
+    [BATCH_ACTIVE_KEY]: uniq.length > 0,
+  });
+  return uniq;
+}
+
+async function addBatchTab(tabId) {
+  if (!tabId) return;
+  const ids = await readBatchTabIds();
+  if (!ids.includes(tabId)) ids.push(tabId);
+  await writeBatchTabIds(ids);
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+  try {
+    await chrome.tabs.update(tabId, { autoDiscardable: false });
+  } catch (_) {}
+}
+
+async function removeBatchTab(tabId) {
+  if (!tabId) return;
+  const ids = (await readBatchTabIds()).filter((id) => id !== tabId);
+  await writeBatchTabIds(ids);
+  if (!ids.length) await chrome.alarms.clear(KEEPALIVE_ALARM);
+}
+
+async function pingAllBatchTabs() {
+  const ids = await readBatchTabIds();
+  if (!ids.length) {
+    await chrome.alarms.clear(KEEPALIVE_ALARM);
+    return;
+  }
+  const alive = [];
+  await Promise.all(
+    ids.map(
+      (id) =>
+        new Promise((resolve) => {
+          chrome.tabs.sendMessage(id, { action: "PING", ts: Date.now() }, () => {
+            if (chrome.runtime.lastError) {
+              resolve(false);
+              return;
+            }
+            alive.push(id);
+            resolve(true);
+          });
+        })
+    )
+  );
+  if (alive.length !== ids.length) await writeBatchTabIds(alive);
+  if (!alive.length) await chrome.alarms.clear(KEEPALIVE_ALARM);
+}
+
+function ensureKeepAliveAlarm() {
+  readBatchTabIds().then((ids) => {
+    if (ids.length) chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+  });
+}
+
+ensureKeepAliveAlarm();
 
 function escapeCsvCell(value) {
   const s = value == null ? "" : String(value);
@@ -116,36 +189,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
+  if (message?.action === "GET_TAB_ID") {
+    sendResponse({ tabId: sender?.tab?.id || 0 });
+    return true;
+  }
   if (message?.action === "CLEAR_STOP") {
-    chrome.storage.local.set({ [STOP_KEY]: false }).then(() => sendResponse({ ok: true }));
+    const tabId = sender?.tab?.id;
+    const patch = { [LEGACY_STOP_KEY]: false };
+    if (tabId) patch[stopStorageKey(tabId)] = false;
+    chrome.storage.local.set(patch).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (message?.action === "REQUEST_STOP") {
-    chrome.storage.local.set({ [STOP_KEY]: true }).then(() => sendResponse({ ok: true }));
+    const tabId = sender?.tab?.id;
+    if (!tabId) {
+      sendResponse({ ok: false, error: "no_tab" });
+      return true;
+    }
+    chrome.storage.local.set({ [stopStorageKey(tabId)]: true }).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (message?.action === "GET_STOP") {
-    chrome.storage.local.get(STOP_KEY).then((v) => sendResponse({ stop: !!v[STOP_KEY] }));
+    const tabId = sender?.tab?.id;
+    if (!tabId) {
+      sendResponse({ stop: false });
+      return true;
+    }
+    chrome.storage.local.get(stopStorageKey(tabId)).then((v) => sendResponse({ stop: !!v[stopStorageKey(tabId)] }));
     return true;
   }
   if (message?.action === "KEEPALIVE") {
-    // Content script is alive — keep the alarm running
-    if (sender?.tab?.id) batchTabId = sender.tab.id;
+    if (sender?.tab?.id) addBatchTab(sender.tab.id);
     sendResponse({ ok: true });
     return true;
   }
   if (message?.action === "BATCH_STARTED") {
-    batchTabId = sender?.tab?.id || null;
-    chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 });
-    chrome.storage.local.set({ [BATCH_ACTIVE_KEY]: true });
-    sendResponse({ ok: true });
+    addBatchTab(sender?.tab?.id || 0).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (message?.action === "BATCH_ENDED") {
-    chrome.alarms.clear(KEEPALIVE_ALARM);
-    chrome.storage.local.set({ [BATCH_ACTIVE_KEY]: false });
-    batchTabId = null;
-    sendResponse({ ok: true });
+    removeBatchTab(sender?.tab?.id || 0).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (message?.action === "ENRICHER_HEALTH") {
@@ -391,14 +474,13 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-/** Alarm-based keep-alive: pings the scraping tab to prevent Chrome from suspending it. */
+/** Alarm-based keep-alive: ping every running Maps tab (not just one). */
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== KEEPALIVE_ALARM) return;
-  if (!batchTabId) return;
-  // Ping the tab to keep it active — the mere act of sending a message prevents suspension
-  chrome.tabs.sendMessage(batchTabId, { action: "PING" }).catch(() => {
-    // Tab may have closed — stop the alarm
-    chrome.alarms.clear(KEEPALIVE_ALARM);
-    batchTabId = null;
-  });
+  pingAllBatchTabs();
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  removeBatchTab(tabId);
+  chrome.storage.local.remove(stopStorageKey(tabId));
 });
